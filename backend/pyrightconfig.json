@@ -1,0 +1,14 @@
+{
+  "include": ["*.py"],
+  "pythonVersion": "3.13",
+  "pythonPlatform": "Windows",
+  "typeCheckingMode": "basic",
+  "reportMissingModuleSource": false,
+  "reportMissingImports": false,
+  "reportMissingModules": false,
+  "reportPrivateImportUsage": false,
+  "venvPath": ".",
+  "defineConstant": {
+    "DEBUG": true
+  }
+}

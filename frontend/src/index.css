@@ -1,0 +1,116 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 10% 12%;
+    --foreground: 270 20% 92%;
+
+    --card: 240 10% 15%;
+    --card-foreground: 270 20% 92%;
+
+    --popover: 240 10% 15%;
+    --popover-foreground: 270 20% 92%;
+
+    --primary: 270 60% 58%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 240 10% 20%;
+    --secondary-foreground: 270 20% 85%;
+
+    --muted: 240 8% 18%;
+    --muted-foreground: 240 8% 55%;
+
+    --accent: 320 60% 55%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 240 10% 22%;
+    --input: 240 10% 22%;
+    --ring: 270 60% 58%;
+
+    --radius: 0.75rem;
+
+    --gradient-primary: linear-gradient(135deg, hsl(270 60% 58%), hsl(320 60% 55%));
+    --gradient-beam: linear-gradient(135deg, hsl(270 70% 50%), hsl(320 70% 60%));
+    --gradient-glow: radial-gradient(ellipse at center, hsl(270 60% 58% / 0.15), transparent 70%);
+
+    --sidebar-background: 240 10% 10%;
+    --sidebar-foreground: 270 20% 85%;
+    --sidebar-primary: 270 60% 58%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 10% 18%;
+    --sidebar-accent-foreground: 270 20% 85%;
+    --sidebar-border: 240 10% 18%;
+    --sidebar-ring: 270 60% 58%;
+
+    --chart-hot: 320 80% 60%;
+    --chart-warm: 280 60% 50%;
+    --chart-mid: 260 50% 40%;
+    --chart-cool: 240 40% 30%;
+    --chart-cold: 240 30% 18%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    @apply bg-card/80 backdrop-blur-xl border border-border/50 rounded-xl;
+  }
+
+  .glow-purple {
+    box-shadow: 0 0 20px hsl(270 60% 58% / 0.2), 0 0 60px hsl(270 60% 58% / 0.1);
+  }
+
+  .gradient-text {
+    @apply bg-clip-text text-transparent;
+    background-image: var(--gradient-primary);
+  }
+
+  .beam-gradient {
+    background-image: var(--gradient-beam);
+  }
+}
+
+/* Recharts dark theme overrides */
+.recharts-cartesian-grid line {
+  stroke: hsl(240 10% 22%) !important;
+}
+.recharts-text {
+  fill: hsl(240 8% 55%) !important;
+  font-size: 11px !important;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: hsl(240 10% 12%);
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(240 10% 25%);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(270 60% 58%);
+}

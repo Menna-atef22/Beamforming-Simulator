@@ -1,0 +1,8 @@
+.heatmap-canvas {
+  image-rendering: pixelated;
+  object-fit: contain;
+}
+
+.heatmap-gradient {
+  background: linear-gradient(to right, #0f0820, #5a1070, #c83898, #ffcce0);
+}
