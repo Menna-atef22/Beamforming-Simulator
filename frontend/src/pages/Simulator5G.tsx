@@ -3,6 +3,7 @@ import MainLayout from "@/components/layout/MainLayout";
 import ControlPanel from "@/components/ControlPanel";
 import { BeamformingParams } from "@/types/beamforming";
 import { use5GSimulatorAPI, Simulator5GResponse, Tower, User } from "@/hooks/use5GSimulatorAPI";
+import { useDebounce } from "@/hooks/useDebounce";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
   LineChart, Line,
@@ -25,21 +26,37 @@ const defaultParams: BeamformingParams = {
 
 export default function Simulator5G() {
   const [params, setParams] = useState<BeamformingParams>(defaultParams);
+  const debouncedParams = useDebounce(params, 300);
   const [result, setResult] = useState<Simulator5GResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const { simulate, error, loading } = use5GSimulatorAPI();
+  const isInitialLoadRef = useRef(true);
+  const [isLoading, setIsLoading] = useState(true);
+  const { simulate, error } = use5GSimulatorAPI();
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Run simulation when params change
+  // Run simulation when debounced params change - FIXED: no isInitialLoad in deps
   useEffect(() => {
+    let isMounted = true;
+    
     const runSim = async () => {
       setIsLoading(true);
-      const res = await simulate(params);
-      setResult(res);
-      setIsLoading(false);
+      try {
+        const res = await simulate(debouncedParams, isInitialLoadRef.current);
+        if (isMounted && res?.success) {
+          setResult(res);
+          isInitialLoadRef.current = false;
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      }
     };
+    
     runSim();
-  }, [params, simulate]);
+    return () => {
+      isMounted = false;
+    };
+  }, [debouncedParams, simulate]);
 
   const updateParam = <K extends keyof BeamformingParams>(key: K, value: BeamformingParams[K]) => {
     setParams((prev) => ({ ...prev, [key]: value }));
@@ -117,7 +134,7 @@ export default function Simulator5G() {
     });
   }, [fiveG]);
 
-  if (error || loading) {
+  if (error && isInitialLoadRef.current) {
     return (
       <MainLayout controlPanel={<ControlPanel params={params} onParamChange={updateParam} />}>
         <Alert variant="destructive" className="m-4">
@@ -127,20 +144,26 @@ export default function Simulator5G() {
     );
   }
 
-  const userSignalData = fiveG?.users.map((u: User) => ({
-    name: `User ${u.id}`,
-    signal: parseFloat(u.signal_strength.toFixed(3)),
-  })) ?? [];
+  const userSignalData = useMemo(() => 
+    fiveG?.users.map((u: User) => ({
+      name: `User ${u.id}`,
+      signal: parseFloat(u.signal_strength.toFixed(3)),
+    })) ?? [],
+    [fiveG?.users]
+  );
 
   // Distance vs signal for each user from each tower
-  const distSignalData = (fiveG?.towers.flatMap((tower: Tower) =>
-    (fiveG?.users ?? []).map((user: User) => {
-      const dx = user.x - tower.x;
-      const dy = user.y - tower.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      return { distance: parseFloat(dist.toFixed(2)), signal: parseFloat((user.signal_strength / (fiveG?.towers.length ?? 1)).toFixed(3)), label: `T${tower.id}→U${user.id}` };
-    })
-  ) ?? []).sort((a, b) => a.distance - b.distance);
+  const distSignalData = useMemo(() =>
+    (fiveG?.towers.flatMap((tower: Tower) =>
+      (fiveG?.users ?? []).map((user: User) => {
+        const dx = user.x - tower.x;
+        const dy = user.y - tower.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        return { distance: parseFloat(dist.toFixed(2)), signal: parseFloat((user.signal_strength / (fiveG?.towers.length ?? 1)).toFixed(3)), label: `T${tower.id}→U${user.id}` };
+      })
+    ) ?? []).sort((a, b) => a.distance - b.distance),
+    [fiveG?.towers, fiveG?.users]
+  );
 
   return (
     <MainLayout controlPanel={<ControlPanel params={params} onParamChange={updateParam} />}>
@@ -148,14 +171,13 @@ export default function Simulator5G() {
         {/* 2D Map */}
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">5G Coverage Map (3 Towers · 2 Users)</h3>
-          <div className="flex-1 min-h-0 flex items-center justify-center">
-            {isLoading ? (
-              <div className="text-center">
+          <div className="flex-1 min-h-0 flex items-center justify-center relative">
+            <canvas ref={canvasRef} className={`simulator-canvas rounded-lg max-w-full max-h-full ${isInitialLoadRef.current ? 'loading' : 'ready'}`} />
+            {isInitialLoadRef.current && (
+              <div className="absolute text-center">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
                 <p className="text-xs text-muted-foreground">Initializing...</p>
               </div>
-            ) : (
-              <canvas ref={canvasRef} className="simulator-canvas rounded-lg max-w-full max-h-full" />
             )}
           </div>
         </div>
@@ -163,71 +185,70 @@ export default function Simulator5G() {
         {/* Signal Strength per User */}
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Signal Strength per User</h3>
-          <div className="flex-1 min-h-0">
-            {isLoading ? (
-              <div className="flex items-center justify-center h-full">
+          <div className="flex-1 min-h-0 relative">
+            {isInitialLoadRef.current && (
+              <div className="absolute inset-0 flex items-center justify-center z-10 rounded loading-overlay">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2"></div>
                   <p className="text-xs text-muted-foreground">Loading...</p>
                 </div>
               </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={userSignalData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }} />
-                  <YAxis tick={{ fontSize: 9 }} label={{ value: "Signal", angle: -90, position: "insideLeft", style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
-                  <Tooltip contentStyle={{ backgroundColor: "hsl(240,10%,15%)", border: "1px solid hsl(240,10%,22%)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
-                  <Bar dataKey="signal" radius={[6, 6, 0, 0]}>
-                    {userSignalData.map((_, i) => (
-                      <Cell key={i} fill={i === 0 ? "hsl(270,70%,50%)" : "hsl(320,70%,60%)"} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
             )}
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={userSignalData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
+                <XAxis dataKey="name" tick={{ fontSize: 10, fontFamily: "JetBrains Mono" }} />
+                <YAxis tick={{ fontSize: 9 }} label={{ value: "Signal", angle: -90, position: "insideLeft", style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
+                <Tooltip contentStyle={{ backgroundColor: "hsl(240,10%,15%)", border: "1px solid hsl(240,10%,22%)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
+                <Bar dataKey="signal" radius={[6, 6, 0, 0]}>
+                  {userSignalData.map((_, i) => (
+                    <Cell key={`cell-${i}`} fill={i === 0 ? "hsl(270,70%,50%)" : "hsl(320,70%,60%)"} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
           </div>
         </div>
 
         {/* Distance vs Signal */}
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Distance vs Signal</h3>
-          <div className="flex-1 min-h-0">
-            {isLoading ? (
-              <div className="flex items-center justify-center h-full">
+          <div className="flex-1 min-h-0 relative">
+            {isInitialLoadRef.current && (
+              <div className="absolute inset-0 flex items-center justify-center z-10 rounded loading-overlay">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2"></div>
                   <p className="text-xs text-muted-foreground">Loading...</p>
                 </div>
               </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={distSignalData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
-                  <XAxis dataKey="distance" tick={{ fontSize: 9 }}
-                    label={{ value: "Distance", position: "bottom", offset: 5, style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
-                  <YAxis tick={{ fontSize: 9 }}
-                    label={{ value: "Signal", angle: -90, position: "insideLeft", style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
-                  <Tooltip contentStyle={{ backgroundColor: "hsl(240,10%,15%)", border: "1px solid hsl(240,10%,22%)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
-                  <Line type="monotone" dataKey="signal" stroke="hsl(280,60%,55%)" strokeWidth={2} dot={{ r: 4, fill: "hsl(320,70%,60%)" }} />
-                </LineChart>
-              </ResponsiveContainer>
             )}
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={distSignalData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
+                <XAxis dataKey="distance" tick={{ fontSize: 9 }}
+                  label={{ value: "Distance", position: "bottom", offset: 5, style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
+                <YAxis tick={{ fontSize: 9 }}
+                  label={{ value: "Signal", angle: -90, position: "insideLeft", style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
+                <Tooltip contentStyle={{ backgroundColor: "hsl(240,10%,15%)", border: "1px solid hsl(240,10%,22%)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
+                <Line type="monotone" dataKey="signal" stroke="hsl(280,60%,55%)" strokeWidth={2} dot={{ r: 4, fill: "hsl(320,70%,60%)" }} />
+              </LineChart>
+            </ResponsiveContainer>
           </div>
         </div>
 
         {/* Beam Direction */}
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Tower Beam Direction</h3>
-          <div className="flex-1 min-h-0">
-            {isLoading ? (
-              <div className="flex items-center justify-center h-full">
+          <div className="flex-1 min-h-0 relative">
+            {isInitialLoadRef.current && (
+              <div className="absolute inset-0 flex items-center justify-center z-10 rounded loading-overlay">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2"></div>
                   <p className="text-xs text-muted-foreground">Loading...</p>
                 </div>
               </div>
-            ) : result?.data?.beam_patterns && result.data.beam_patterns.length > 0 ? (
+            )}
+            {result?.data?.beam_patterns && result.data.beam_patterns.length > 0 ? (
               <BeamPlot 
                 beamPattern={{
                   angles: result.data.beam_patterns[0].angles ?? [],

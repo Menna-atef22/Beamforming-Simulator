@@ -21,10 +21,16 @@ export interface SimulatorUltrasoundResponse {
 
 export function useUltrasoundSimulatorAPI() {
   const [loading, setLoading] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const simulate = useCallback(async (params: BeamformingParams): Promise<SimulatorUltrasoundResponse | null> => {
-    setLoading(true);
+  const simulate = useCallback(async (params: BeamformingParams, isInitial: boolean = false): Promise<SimulatorUltrasoundResponse | null> => {
+    // Use full loading only on initial load, use lighter update state for subsequent calls
+    if (isInitial) {
+      setLoading(true);
+    } else {
+      setIsUpdating(true);
+    }
     setError(null);
 
     try {
@@ -60,8 +66,9 @@ export function useUltrasoundSimulatorAPI() {
       return null;
     } finally {
       setLoading(false);
+      setIsUpdating(false);
     }
   }, []);
 
-  return { simulate, loading, error };
+  return { simulate, loading, isUpdating, error };
 }

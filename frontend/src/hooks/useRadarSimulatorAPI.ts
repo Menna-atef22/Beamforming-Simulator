@@ -23,10 +23,16 @@ export interface SimulatorRadarResponse {
 
 export function useRadarSimulatorAPI() {
   const [loading, setLoading] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const simulate = useCallback(async (params: BeamformingParams): Promise<SimulatorRadarResponse | null> => {
-    setLoading(true);
+  const simulate = useCallback(async (params: BeamformingParams, isInitial: boolean = false): Promise<SimulatorRadarResponse | null> => {
+    // Use full loading only on initial load, use lighter update state for subsequent calls
+    if (isInitial) {
+      setLoading(true);
+    } else {
+      setIsUpdating(true);
+    }
     setError(null);
 
     try {
@@ -62,8 +68,9 @@ export function useRadarSimulatorAPI() {
       return null;
     } finally {
       setLoading(false);
+      setIsUpdating(false);
     }
   }, []);
 
-  return { simulate, loading, error };
+  return { simulate, loading, isUpdating, error };
 }

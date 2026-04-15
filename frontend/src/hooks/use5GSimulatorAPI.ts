@@ -36,10 +36,16 @@ export interface Simulator5GResponse {
 
 export function use5GSimulatorAPI() {
   const [loading, setLoading] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const simulate = useCallback(async (params: BeamformingParams): Promise<Simulator5GResponse | null> => {
-    setLoading(true);
+  const simulate = useCallback(async (params: BeamformingParams, isInitial: boolean = false): Promise<Simulator5GResponse | null> => {
+    // Use full loading only on initial load, use lighter update state for subsequent calls
+    if (isInitial) {
+      setLoading(true);
+    } else {
+      setIsUpdating(true);
+    }
     setError(null);
 
     try {
@@ -75,8 +81,9 @@ export function use5GSimulatorAPI() {
       return null;
     } finally {
       setLoading(false);
+      setIsUpdating(false);
     }
   }, []);
 
-  return { simulate, loading, error };
+  return { simulate, loading, isUpdating, error };
 }

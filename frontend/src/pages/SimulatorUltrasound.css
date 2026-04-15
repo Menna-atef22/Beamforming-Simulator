@@ -1,3 +1,15 @@
 .bmode-canvas {
   image-rendering: pixelated;
 }
+
+.ultrasound-canvas.loading {
+  opacity: 0;
+}
+
+.ultrasound-canvas.ready {
+  opacity: 1;
+}
+
+.ultrasound-loading-overlay {
+  background-color: hsla(240, 10%, 8%, 0.5);
+}

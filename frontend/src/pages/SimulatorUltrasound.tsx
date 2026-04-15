@@ -3,6 +3,7 @@ import MainLayout from "@/components/layout/MainLayout";
 import ControlPanel from "@/components/ControlPanel";
 import { BeamformingParams } from "@/types/beamforming";
 import { useUltrasoundSimulatorAPI, SimulatorUltrasoundResponse, UltrasoundReflection } from "@/hooks/useUltrasoundSimulatorAPI";
+import { useDebounce } from "@/hooks/useDebounce";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import "./SimulatorUltrasound.css";
 import {
@@ -24,9 +25,11 @@ const defaultParams: BeamformingParams = {
 
 export default function SimulatorUltrasound() {
   const [params, setParams] = useState<BeamformingParams>(defaultParams);
+  const debouncedParams = useDebounce(params, 300);
   const [result, setResult] = useState<SimulatorUltrasoundResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const { simulate, error, loading } = useUltrasoundSimulatorAPI();
+  const isInitialLoadRef = useRef(true);
+  const [isLoading, setIsLoading] = useState(true);
+  const { simulate, error } = useUltrasoundSimulatorAPI();
   const us = useMemo(() => {
     if (!result?.data) return null;
     return {
@@ -38,28 +41,45 @@ export default function SimulatorUltrasound() {
   const phantomRef = useRef<HTMLCanvasElement>(null);
   const bmodeRef = useRef<HTMLCanvasElement>(null);
 
-  // Run simulation when params change
+  // Run simulation when debounced params change - FIXED: no isInitialLoad in deps
   useEffect(() => {
+    let isMounted = true;
+    
     const runSim = async () => {
       setIsLoading(true);
-      const res = await simulate(params);
-      setResult(res);
-      setIsLoading(false);
+      try {
+        const res = await simulate(debouncedParams, isInitialLoadRef.current);
+        if (isMounted && res?.success) {
+          setResult(res);
+          isInitialLoadRef.current = false;
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      }
     };
+    
     runSim();
-  }, [params, simulate]);
+    return () => {
+      isMounted = false;
+    };
+  }, [debouncedParams, simulate]);
 
   const updateParam = <K extends keyof BeamformingParams>(key: K, value: BeamformingParams[K]) => {
     setParams((prev) => ({ ...prev, [key]: value }));
   };
 
   // A-mode data
-  const aData = us?.depths
-    .filter((_: number, i: number) => i % 2 === 0)
-    .map((d: number, i: number) => ({
-      depth: parseFloat(d.toFixed(2)),
-      amplitude: parseFloat(((us?.amplitudes[i * 2] || 0)).toFixed(4)),
-    })) ?? [];
+  const aData = useMemo(() =>
+    us?.depths
+      .filter((_: number, i: number) => i % 2 === 0)
+      .map((d: number, i: number) => ({
+        depth: parseFloat(d.toFixed(2)),
+        amplitude: parseFloat(((us?.amplitudes[i * 2] || 0)).toFixed(4)),
+      })) ?? [],
+    [us?.depths, us?.amplitudes]
+  );
 
   // Phantom View (organ shapes)
   useEffect(() => {
@@ -148,14 +168,17 @@ export default function SimulatorUltrasound() {
   }, [us]);
 
   // Probe direction data
-  const probeData = Array.from({ length: 181 }, (_, i) => {
-    const angle = i - 90;
-    const steerDiff = Math.abs(angle - params.steeringAngleDeg);
-    const gain = Math.exp(-(steerDiff * steerDiff) / (2 * 15 * 15));
-    return { angle, gain: parseFloat(gain.toFixed(4)) };
-  });
+  const probeData = useMemo(() =>
+    Array.from({ length: 181 }, (_, i) => {
+      const angle = i - 90;
+      const steerDiff = Math.abs(angle - params.steeringAngleDeg);
+      const gain = Math.exp(-(steerDiff * steerDiff) / (2 * 15 * 15));
+      return { angle, gain: parseFloat(gain.toFixed(4)) };
+    }),
+    [params.steeringAngleDeg]
+  );
 
-  if (error || loading) {
+  if (error && isInitialLoad) {
     return (
       <MainLayout controlPanel={<ControlPanel params={params} onParamChange={updateParam} />}>
         <Alert variant="destructive" className="m-4">
@@ -171,14 +194,13 @@ export default function SimulatorUltrasound() {
         {/* Phantom View */}
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Phantom View (Organ Layout)</h3>
-          <div className="flex-1 min-h-0 flex items-center justify-center">
-            {isLoading ? (
-              <div className="text-center">
+          <div className="flex-1 min-h-0 flex items-center justify-center relative">
+            <canvas ref={phantomRef} className={`ultrasound-canvas rounded-lg max-w-full max-h-full ${isInitialLoadRef.current ? 'loading' : 'ready'}`} />
+            {isInitialLoadRef.current && (
+              <div className="absolute text-center">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
                 <p className="text-xs text-muted-foreground">Initializing...</p>
               </div>
-            ) : (
-              <canvas ref={phantomRef} className="rounded-lg max-w-full max-h-full" />
             )}
           </div>
         </div>
@@ -186,50 +208,48 @@ export default function SimulatorUltrasound() {
         {/* A-mode Plot */}
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">A-Mode (Amplitude vs Depth)</h3>
-          <div className="flex-1 min-h-0">
-            {isLoading ? (
-              <div className="flex items-center justify-center h-full">
+          <div className="flex-1 min-h-0 relative">
+            {isInitialLoadRef.current && (
+              <div className="absolute inset-0 flex items-center justify-center z-10 rounded ultrasound-loading-overlay">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2"></div>
                   <p className="text-xs text-muted-foreground">Loading...</p>
                 </div>
               </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={aData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
-                  <defs>
-                    <linearGradient id="usGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="hsl(270,70%,50%)" stopOpacity={0.5} />
-                      <stop offset="100%" stopColor="hsl(320,70%,60%)" stopOpacity={0.05} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
-                  <XAxis dataKey="depth" tick={{ fontSize: 9 }}
-                    label={{ value: "Depth (cm)", position: "bottom", offset: 5, style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
-                  <YAxis tick={{ fontSize: 9 }}
-                    label={{ value: "Amplitude", angle: -90, position: "insideLeft", style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
-                  <Tooltip contentStyle={{ backgroundColor: "hsl(240,10%,15%)", border: "1px solid hsl(240,10%,22%)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
-                  {us?.reflections?.map((ref, i) => (
-                    <ReferenceLine key={i} x={ref.depth} stroke="hsl(320,70%,60%)" strokeDasharray="4 4" strokeOpacity={0.5} />
-                  ))}
-                  <Area type="monotone" dataKey="amplitude" stroke="hsl(270,70%,50%)" fill="url(#usGrad)" strokeWidth={1.5} dot={false} />
-                </AreaChart>
-              </ResponsiveContainer>
             )}
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={aData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
+                <defs>
+                  <linearGradient id="usGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="hsl(270,70%,50%)" stopOpacity={0.5} />
+                    <stop offset="100%" stopColor="hsl(320,70%,60%)" stopOpacity={0.05} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
+                <XAxis dataKey="depth" tick={{ fontSize: 9 }}
+                  label={{ value: "Depth (cm)", position: "bottom", offset: 5, style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
+                <YAxis tick={{ fontSize: 9 }}
+                  label={{ value: "Amplitude", angle: -90, position: "insideLeft", style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
+                <Tooltip contentStyle={{ backgroundColor: "hsl(240,10%,15%)", border: "1px solid hsl(240,10%,22%)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
+                {us?.reflections?.map((ref, i) => (
+                  <ReferenceLine key={i} x={ref.depth} stroke="hsl(320,70%,60%)" strokeDasharray="4 4" strokeOpacity={0.5} />
+                ))}
+                <Area type="monotone" dataKey="amplitude" stroke="hsl(270,70%,50%)" fill="url(#usGrad)" strokeWidth={1.5} dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
         </div>
 
         {/* B-mode Image */}
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">B-Mode Image</h3>
-          <div className="flex-1 min-h-0 flex items-center justify-center">
-            {isLoading ? (
-              <div className="text-center">
+          <div className="flex-1 min-h-0 flex items-center justify-center relative">
+            <canvas ref={bmodeRef} className={`bmode-canvas ultrasound-canvas rounded-lg max-w-full max-h-full ${isInitialLoadRef.current ? 'loading' : 'ready'}`} />
+            {isInitialLoadRef.current && (
+              <div className="absolute text-center">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
                 <p className="text-xs text-muted-foreground">Initializing...</p>
               </div>
-            ) : (
-              <canvas ref={bmodeRef} className="bmode-canvas rounded-lg max-w-full max-h-full" />
             )}
           </div>
         </div>
@@ -237,33 +257,32 @@ export default function SimulatorUltrasound() {
         {/* Probe Direction */}
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Probe Direction</h3>
-          <div className="flex-1 min-h-0">
-            {isLoading ? (
-              <div className="flex items-center justify-center h-full">
+          <div className="flex-1 min-h-0 relative">
+            {isInitialLoadRef.current && (
+              <div className="absolute inset-0 flex items-center justify-center z-10 rounded ultrasound-loading-overlay">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2"></div>
                   <p className="text-xs text-muted-foreground">Loading...</p>
                 </div>
               </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={probeData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
-                  <defs>
-                    <linearGradient id="probeGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="hsl(290,60%,50%)" stopOpacity={0.4} />
-                      <stop offset="100%" stopColor="hsl(290,60%,50%)" stopOpacity={0.02} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
-                  <XAxis dataKey="angle" tick={{ fontSize: 9 }}
-                    label={{ value: "Angle (°)", position: "bottom", offset: 5, style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
-                  <YAxis tick={{ fontSize: 9 }}
-                    label={{ value: "Gain", angle: -90, position: "insideLeft", style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
-                  <Tooltip contentStyle={{ backgroundColor: "hsl(240,10%,15%)", border: "1px solid hsl(240,10%,22%)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
-                  <Area type="monotone" dataKey="gain" stroke="hsl(290,60%,50%)" fill="url(#probeGrad)" strokeWidth={1.5} dot={false} />
-                </AreaChart>
-              </ResponsiveContainer>
             )}
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={probeData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
+                <defs>
+                  <linearGradient id="probeGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="hsl(290,60%,50%)" stopOpacity={0.4} />
+                    <stop offset="100%" stopColor="hsl(290,60%,50%)" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
+                <XAxis dataKey="angle" tick={{ fontSize: 9 }}
+                  label={{ value: "Angle (°)", position: "bottom", offset: 5, style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
+                <YAxis tick={{ fontSize: 9 }}
+                  label={{ value: "Gain", angle: -90, position: "insideLeft", style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
+                <Tooltip contentStyle={{ backgroundColor: "hsl(240,10%,15%)", border: "1px solid hsl(240,10%,22%)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
+                <Area type="monotone" dataKey="gain" stroke="hsl(290,60%,50%)" fill="url(#probeGrad)" strokeWidth={1.5} dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
         </div>
       </div>

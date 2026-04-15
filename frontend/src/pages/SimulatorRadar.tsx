@@ -3,6 +3,7 @@ import MainLayout from "@/components/layout/MainLayout";
 import ControlPanel from "@/components/ControlPanel";
 import { BeamformingParams } from "@/types/beamforming";
 import { useRadarSimulatorAPI, SimulatorRadarResponse, RadarTarget } from "@/hooks/useRadarSimulatorAPI";
+import { useDebounce } from "@/hooks/useDebounce";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -26,23 +27,39 @@ const defaultParams: BeamformingParams = {
 
 export default function SimulatorRadar() {
   const [params, setParams] = useState<BeamformingParams>(defaultParams);
+  const debouncedParams = useDebounce(params, 300);
   const [result, setResult] = useState<SimulatorRadarResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const { simulate, error, loading } = useRadarSimulatorAPI();
+  const isInitialLoadRef = useRef(true);
+  const [isLoading, setIsLoading] = useState(true);
+  const { simulate, error } = useRadarSimulatorAPI();
   const [beamWidth, setBeamWidth] = useState(10);
   const [scanSpeed, setScanSpeed] = useState(5);
   const radarCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Run simulation when params change
+  // Run simulation when debounced params change - FIXED: no isInitialLoad in deps
   useEffect(() => {
+    let isMounted = true;
+    
     const runSim = async () => {
       setIsLoading(true);
-      const res = await simulate(params);
-      setResult(res);
-      setIsLoading(false);
+      try {
+        const res = await simulate(debouncedParams, isInitialLoadRef.current);
+        if (isMounted && res?.success) {
+          setResult(res);
+          isInitialLoadRef.current = false;
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      }
     };
+    
     runSim();
-  }, [params, simulate]);
+    return () => {
+      isMounted = false;
+    };
+  }, [debouncedParams, simulate]);
 
   const updateParam = <K extends keyof BeamformingParams>(key: K, value: BeamformingParams[K]) => {
     setParams((prev) => ({ ...prev, [key]: value }));
@@ -155,32 +172,40 @@ export default function SimulatorRadar() {
   }, [radar, params, beamWidth]);
 
   // Distance vs time
-  const distTimeData = radar?.targets?.map((t: RadarTarget, i: number) => ({
-    target: `T${i + 1}`,
-    distance: t.range,
-    time: parseFloat(((2 * t.range) / 3e8 * 1e6).toFixed(4)),
-  })) ?? [];
+  const distTimeData = useMemo(() => 
+    radar?.targets?.map((t: RadarTarget, i: number) => ({
+      target: `T${i + 1}`,
+      distance: t.range,
+      time: parseFloat(((2 * t.range) / 3e8 * 1e6).toFixed(4)),
+    })) ?? [],
+    [radar?.targets]
+  );
 
   // Angle detection data
-  const angleDetData = (radar?.angles?.length
-    ? radar.angles
-        .filter((_, i) => i % 3 === 0)
-        .map((angle, i) => ({
-          angle,
-          return: parseFloat(((radar.returns?.[i * 3] ?? 0) || 0).toFixed(4)),
-        }))
-    : []);
+  const angleDetData = useMemo(() =>
+    (radar?.angles?.length
+      ? radar.angles
+          .filter((_, i) => i % 3 === 0)
+          .map((angle, i) => ({
+            angle,
+            return: parseFloat(((radar.returns?.[i * 3] ?? 0) || 0).toFixed(4)),
+          }))
+      : []),
+    [radar?.angles, radar?.returns]
+  );
 
   // Beam width effect: multiple beam widths
-  const beamWidths = [5, 10, 20];
-  const beamWidthData = Array.from({ length: 61 }, (_, i) => {
-    const angle = i - 30;
-    const entry: Record<string, number | string> = { angle };
-    beamWidths.forEach((bw) => {
-      entry[`bw${bw}`] = parseFloat(Math.exp(-(angle * angle) / (2 * (bw / 2.35) * (bw / 2.35))).toFixed(4));
+  const beamWidthData = useMemo(() => {
+    const beamWidths = [5, 10, 20];
+    return Array.from({ length: 61 }, (_, i) => {
+      const angle = i - 30;
+      const entry: Record<string, number | string> = { angle };
+      beamWidths.forEach((bw) => {
+        entry[`bw${bw}`] = parseFloat(Math.exp(-(angle * angle) / (2 * (bw / 2.35) * (bw / 2.35))).toFixed(4));
+      });
+      return entry;
     });
-    return entry;
-  });
+  }, []);
 
   const extraControls = (
     <>
@@ -201,7 +226,7 @@ export default function SimulatorRadar() {
     </>
   );
 
-  if (error || loading) {
+  if (error && isInitialLoadRef.current) {
     return (
       <MainLayout controlPanel={<ControlPanel params={params} onParamChange={updateParam} />}>
         <Alert variant="destructive" className="m-4">
@@ -217,14 +242,13 @@ export default function SimulatorRadar() {
         {/* Radar Scan */}
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Radar Scan (Rotating Beam + Objects)</h3>
-          <div className="flex-1 min-h-0 flex items-center justify-center">
-            {isLoading ? (
-              <div className="text-center">
+          <div className="flex-1 min-h-0 flex items-center justify-center relative">
+            <canvas ref={radarCanvasRef} className={`radar-canvas rounded-lg max-w-full max-h-full ${isInitialLoadRef.current ? 'loading' : 'ready'}`} />
+            {isInitialLoadRef.current && (
+              <div className="absolute text-center">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2"></div>
                 <p className="text-xs text-muted-foreground">Initializing...</p>
               </div>
-            ) : (
-              <canvas ref={radarCanvasRef} className="radar-canvas rounded-lg max-w-full max-h-full" />
             )}
           </div>
         </div>
@@ -233,7 +257,7 @@ export default function SimulatorRadar() {
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Distance vs Time (Round-Trip)</h3>
           <div className="flex-1 min-h-0">
-            {isLoading ? (
+            {isInitialLoadRef.current ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2"></div>
@@ -263,7 +287,7 @@ export default function SimulatorRadar() {
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Angle Detection (Return Intensity)</h3>
           <div className="flex-1 min-h-0">
-            {isLoading ? (
+            {isInitialLoadRef.current ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2"></div>
@@ -289,7 +313,7 @@ export default function SimulatorRadar() {
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Beam Width Effect Comparison</h3>
           <div className="flex-1 min-h-0">
-            {isLoading ? (
+            {isInitialLoadRef.current ? (
               <div className="flex items-center justify-center h-full">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2"></div>

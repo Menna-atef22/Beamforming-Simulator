@@ -1,3 +1,15 @@
 .simulator-canvas {
   aspect-ratio: 1;
 }
+
+.simulator-canvas.loading {
+  opacity: 0;
+}
+
+.simulator-canvas.ready {
+  opacity: 1;
+}
+
+.loading-overlay {
+  background-color: hsla(240, 10%, 8%, 0.5);
+}

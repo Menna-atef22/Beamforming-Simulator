@@ -1,3 +1,11 @@
 .radar-canvas {
   aspect-ratio: 1;
 }
+
+.radar-canvas.loading {
+  opacity: 0;
+}
+
+.radar-canvas.ready {
+  opacity: 1;
+}
