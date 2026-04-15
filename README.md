@@ -1,27 +1,43 @@
-# Beamforming-Simulator
+# Beamforming Simulator (React + FastAPI)
 
-This project is a 2D Beamforming Simulator.
+A full 2D beamforming simulator with three applications:
 
-Main goals:
+- 5G multi-tower connectivity simulator
+- Ultrasound A/B/Doppler simulator on a Shepp-Logan style phantom
+- 360-degree phased-array radar simulator
 
-- Simulate phased array beamforming
-- Use phase shifting and delays
-- Generate constructive and destructive interference
-- Support real-time beam steering
+## Tech Stack
 
-Physics requirements:
+- Frontend: React + TypeScript + Vite
+- Backend: FastAPI + NumPy
 
-- Wave number k = 2π / λ
-- Phase shift: φ = k _ d _ sin(θ)
-- Total signal = sum of all element contributions
-- Add Gaussian noise based on SNR
+## Project Structure
 
-Modules:
+- `frontend/` React application
+- `backend/` FastAPI service and simulation engines
 
-- Core beamforming engine
-- 5G simulation
-- Ultrasound simulation
-- Radar simulation
+## Run Backend
 
-Important:
-Focus on mathematical correctness, not just visualization.
+```bash
+cd backend
+python -m venv .venv
+.venv\\Scripts\\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+## Run Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend default URL: <http://localhost:5173>
+Backend default URL: <http://localhost:8000>
+
+## Notes
+
+- Beamforming controls include at least seven core parameters, including windowing/apodization and SNR (0-1000).
+- The frontend uses request cancellation and debounced updates for smooth real-time interaction.
