@@ -1,138 +1,66 @@
+/**
+ * Hook for beamforming API communication
+ * Provides access to generic beamforming simulation endpoint
+ */
+
 import { useState, useCallback } from "react";
+import type {
+  BeamformingParams,
+  BeamformingResult,
+} from "../types/beamforming";
 
-const API_BASE = "http://localhost:5000";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
 
-export interface BeamformingRequest {
-  num_elements: number;
-  spacing: number;
-  wavelength: number;
-  steering_angle_deg: number;
-  amplitude: number;
-  snr_db: number;
-  window_type: "rectangular" | "hamming" | "hanning" | "blackman" | "kaiser";
-  noise_enabled: boolean;
-  apodization_enabled: boolean;
-}
-
-export interface BeamformingResponse {
-  success: boolean;
-  data?: {
-    array: Array<{ index: number; x: number; y: number; amplitude: number; phase: number }>;
-    beam_pattern: { angles: number[]; magnitudes: number[]; magnitudes_db: number[] };
-    beam_pattern_no_steer: { angles: number[]; magnitudes: number[]; magnitudes_db: number[] };
-    interference_map: { grid: number[][]; x_range: number[]; y_range: number[]; max_val: number };
-    metrics: { beamwidth_deg: number; sll_db: number; main_lobe_angle_deg: number };
-    signal_profile: Array<{ position: number; amplitude: number }>;
-  };
-  error?: string;
-}
+export type BeamformingAPIResponse = { success: boolean; data: any };
 
 export function useBeamformingAPI() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const simulate = useCallback(async (params: BeamformingRequest): Promise<BeamformingResponse | null> => {
-    setLoading(true);
-    setError(null);
+  const simulate = useCallback(
+    async (params: any): Promise<BeamformingAPIResponse | null> => {
+      setLoading(true);
+      setError(null);
 
-    try {
-      const response = await fetch(`${API_BASE}/api/simulate/beamforming`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(params),
-      });
+      try {
+        const requestBody = {
+          num_elements: params.num_elements ?? params.numElements ?? 8,
+          spacing: params.spacing ?? 0.5,
+          wavelength: params.wavelength ?? 1.0,
+          steering_angle_deg: params.steering_angle_deg ?? params.steeringAngleDeg ?? 0,
+          amplitude: params.amplitude ?? 1.0,
+          snr_db: params.snr_db ?? params.snrDb ?? 30,
+          window_type: params.window_type ?? params.windowType ?? "rectangular",
+          noise_enabled: params.noise_enabled !== undefined ? params.noise_enabled : (params.noiseEnabled ?? true),
+          apodization_enabled: params.apodization_enabled !== undefined ? params.apodization_enabled : (params.apodizationEnabled ?? false),
+        };
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `HTTP ${response.status}`);
+        const response = await fetch(`${API_BASE}/api/simulate/beamforming`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || `HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        return { success: true, data };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        setError(message);
+        console.error("[useBeamformingAPI] Error:", message);
+        return null;
+      } finally {
+        setLoading(false);
       }
+    },
+    []
+  );
 
-      const data: BeamformingResponse = await response.json();
-      return data;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      setError(message);
-      console.error("API Error:", message);
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const simulate5G = useCallback(async (params: BeamformingRequest) => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const response = await fetch(`${API_BASE}/api/simulate/5g`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(params),
-      });
-
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return await response.json();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      setError(message);
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const simulateRadar = useCallback(async (params: BeamformingRequest) => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const response = await fetch(`${API_BASE}/api/simulate/radar`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(params),
-      });
-
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return await response.json();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      setError(message);
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const simulateUltrasound = useCallback(async (params: BeamformingRequest) => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const response = await fetch(`${API_BASE}/api/simulate/ultrasound`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(params),
-      });
-
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return await response.json();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      setError(message);
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  return {
-    loading,
-    error,
-    simulate,
-    simulate5G,
-    simulateRadar,
-    simulateUltrasound,
-  };
+  return { loading, error, simulate };
 }

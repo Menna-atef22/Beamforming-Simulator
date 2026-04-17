@@ -1,6 +1,5 @@
 """API Routes and endpoint definitions for FastAPI"""
 
-import sys
 import logging
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any
@@ -9,220 +8,199 @@ from typing import Dict, Any
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-try:
-    from ..service import SimulationService
-    from ..serializers import (
-        serialize_beamforming_result,
-        serialize_5g_result,
-        serialize_radar_result,
-        serialize_ultrasound_result
-    )
-    from .schemas import (
-        BeamformingParamsSchema,
-        BeamformingResultSchema,
-        FiveGResultSchema,
-        RadarResultSchema,
-        UltrasoundResultSchema,
-        ErrorResponseSchema
-    )
-except ImportError:
-    import sys
-    import os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-    from service import SimulationService
-    from serializers import (
-        serialize_beamforming_result,
-        serialize_5g_result,
-        serialize_radar_result,
-        serialize_ultrasound_result
-    )
-    from .schemas import (
-        BeamformingParamsSchema,
-        BeamformingResultSchema,
-        FiveGResultSchema,
-        RadarResultSchema,
-        UltrasoundResultSchema,
-        ErrorResponseSchema
-    )
-
-
-# ============================================================================
-# Simulation Handlers (API business logic layer)
-# ============================================================================
-
-def beamforming_simulation(params_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle beamforming simulation request"""
-    try:
-        logger.info(f"[Beamforming] Starting simulation with params: {params_dict}")
-        result = SimulationService.run_beamforming(params_dict)
-        logger.info("[Beamforming] Simulation completed successfully")
-        return {
-            "success": True,
-            "data": serialize_beamforming_result(result)
-        }
-    except Exception as e:
-        logger.error(f"[Beamforming] Simulation failed: {str(e)}", exc_info=True)
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-def five_g_simulation(params_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle 5G simulation request"""
-    try:
-        logger.info(f"[5G] Starting simulation with params: {params_dict}")
-        result = SimulationService.run_5g(params_dict)
-        logger.info("[5G] Simulation completed successfully")
-        return {
-            "success": True,
-            "data": serialize_5g_result(result)
-        }
-    except Exception as e:
-        logger.error(f"[5G] Simulation failed: {str(e)}", exc_info=True)
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-def radar_simulation(params_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle Radar simulation request"""
-    try:
-        logger.info(f"[Radar] Starting simulation with params: {params_dict}")
-        result = SimulationService.run_radar(params_dict)
-        logger.info("[Radar] Simulation completed successfully")
-        return {
-            "success": True,
-            "data": serialize_radar_result(result)
-        }
-    except Exception as e:
-        logger.error(f"[Radar] Simulation failed: {str(e)}", exc_info=True)
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-def ultrasound_simulation(params_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle Ultrasound simulation request"""
-    try:
-        logger.info(f"[Ultrasound] Starting simulation with params: {params_dict}")
-        result = SimulationService.run_ultrasound(params_dict)
-        logger.info("[Ultrasound] Simulation completed successfully")
-        return {
-            "success": True,
-            "data": serialize_ultrasound_result(result)
-        }
-    except Exception as e:
-        logger.error(f"[Ultrasound] Simulation failed: {str(e)}", exc_info=True)
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-# ============================================================================
-# FastAPI Routes
-# ============================================================================
+from ..service import SimulationService
+from .schemas import (
+    BeamformingParamsSchema,
+    FiveGParamsSchema,
+    RadarParamsSchema,
+    UltrasoundParamsSchema
+)
 
 # Create FastAPI router
 router = APIRouter(prefix="/api", tags=["simulations"])
 
 
-@router.post(
-    "/simulate/beamforming",
-    response_model=BeamformingResultSchema,
-    responses={400: {"model": ErrorResponseSchema}, 500: {"model": ErrorResponseSchema}}
-)
-async def beamforming_route(params: BeamformingParamsSchema):
-    """Beamforming simulation endpoint"""
+# ============================================================================
+# Helper function to handle simulation responses
+# ============================================================================
+
+def _handle_simulation_response(result: Dict[str, Any], endpoint: str) -> Dict[str, Any]:
+    """Convert service response to API response.
+    
+    Args:
+        result: Service layer result dictionary.
+        endpoint: Endpoint name for logging.
+    
+    Returns:
+        API response dictionary or raises HTTPException.
+    
+    Raises:
+        HTTPException: On failure.
+    """
+    if result.get("success"):
+        logger.info(f"[{endpoint}] Simulation completed successfully")
+        return result.get("data", {})
+    else:
+        error_msg = result.get("error", "Simulation failed")
+        logger.warning(f"[{endpoint}] Simulation error: {error_msg}")
+        raise HTTPException(status_code=400, detail=error_msg)
+
+
+# ============================================================================
+# Beamforming Endpoint
+# ============================================================================
+
+@router.post("/simulate/beamforming")
+async def beamforming_route(params: BeamformingParamsSchema) -> Dict[str, Any]:
+    """Compute beamforming pattern with specified array and steering parameters.
+    
+    **Request Parameters:**
+    - `num_elements`: Number of array elements (1-256)
+    - `spacing`: Element spacing in wavelengths (0.25-1.0)
+    - `frequency`: Operating frequency in Hz (1e6-100e9)
+    - `steering_angle_deg`: Steering angle in degrees (-180 to 180)
+    - `amplitude`: Signal amplitude (0-1)
+    - `snr_db`: SNR in dB (0-100)
+    - `window_type`: Apodization window ("hamming", "hann", "blackman")
+    - `enable_noise`: Add thermal noise
+    - `grid_size`: Angle grid resolution (default: 360)
+    
+    **Returns:**
+    - Beam pattern with magnitudes (linear and dB)
+    - Computed metrics (beamwidth, SLL, directivity)
+    """
     try:
-        logger.info("[Route] Beamforming endpoint called")
-        result = beamforming_simulation(params.dict())
-        if result.get("success"):
-            logger.info("[Route] Beamforming route returning success")
-            return result
-        else:
-            error_msg = result.get("error", "Simulation failed")
-            logger.warning(f"[Route] Beamforming simulation error: {error_msg}")
-            raise HTTPException(status_code=400, detail=error_msg)
+        logger.info(f"[Beamforming] Endpoint called with: {params.dict()}")
+        result = SimulationService.run_beamforming(params.dict())
+        return _handle_simulation_response(result, "Beamforming")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[Route] Beamforming route exception: {str(e)}", exc_info=True)
+        logger.error(f"[Beamforming] Route exception: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post(
-    "/simulate/5g",
-    response_model=FiveGResultSchema,
-    responses={400: {"model": ErrorResponseSchema}, 500: {"model": ErrorResponseSchema}}
-)
-async def five_g_route(params: BeamformingParamsSchema):
-    """5G simulation endpoint"""
+# ============================================================================
+# 5G Network Endpoint
+# ============================================================================
+
+@router.post("/simulate/5g")
+async def five_g_route(params: FiveGParamsSchema) -> Dict[str, Any]:
+    """Simulate 5G network with towers and mobile users.
+    
+    **Request Parameters:**
+    - `num_elements`: Antenna elements per tower (4-64)
+    - `spacing`: Element spacing in wavelengths
+    - `frequency`: Frequency in Hz (typical: 28e9 for 5G mmWave)
+    - `snr_db`: SNR in dB
+    - `auto_steer`: Auto-steer towers toward nearest user
+    - `enable_noise`: Add noise to simulation
+    - `grid_size`: Angle grid resolution for beam patterns
+    
+    **Returns:**
+    - Tower positions and current steering angles
+    - User positions and received signal strength
+    - Tower-user connectivity matrix (distance, angle, gain, path loss)
+    - Network coverage metrics
+    - Beam patterns for each tower
+    """
     try:
-        logger.info("[Route] 5G endpoint called")
-        result = five_g_simulation(params.dict())
-        if result.get("success"):
-            logger.info("[Route] 5G route returning success")
-            return result
-        else:
-            error_msg = result.get("error", "Simulation failed")
-            logger.warning(f"[Route] 5G simulation error: {error_msg}")
-            raise HTTPException(status_code=400, detail=error_msg)
+        logger.info(f"[5G] Endpoint called with: {params.dict()}")
+        result = SimulationService.run_5g(params.dict())
+        return _handle_simulation_response(result, "5G")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[Route] 5G route exception: {str(e)}", exc_info=True)
+        logger.error(f"[5G] Route exception: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post(
-    "/simulate/radar",
-    response_model=RadarResultSchema,
-    responses={400: {"model": ErrorResponseSchema}, 500: {"model": ErrorResponseSchema}}
-)
-async def radar_route(params: BeamformingParamsSchema):
-    """Radar simulation endpoint"""
+# ============================================================================
+# Radar Endpoint
+# ============================================================================
+
+@router.post("/simulate/radar")
+async def radar_route(params: RadarParamsSchema) -> Dict[str, Any]:
+    """Simulate radar system with target detection and Doppler processing.
+    
+    **Request Parameters:**
+    - `num_elements`: Antenna elements (8-128)
+    - `spacing`: Element spacing in wavelengths
+    - `frequency`: Operating frequency in Hz (typical: 10e9)
+    - `snr_db`: SNR in dB
+    - `steering_angle_deg`: Beam steering angle
+    - `scan_range_deg`: Angular scan range (default: 360°)
+    - `enable_noise`: Add thermal noise and clutter
+    - `grid_size`: Number of angle bins
+    - `compute_doppler`: Compute range-Doppler map
+    
+    **Returns:**
+    - Azimuth scan results (angle and received power)
+    - Detected targets with SNR and confidence
+    - Range-Doppler map with velocity estimates
+    - Performance metrics (detection rate, false alarms)
+    """
     try:
-        logger.info("[Route] Radar endpoint called")
-        result = radar_simulation(params.dict())
-        if result.get("success"):
-            logger.info("[Route] Radar route returning success")
-            return result
-        else:
-            error_msg = result.get("error", "Simulation failed")
-            logger.warning(f"[Route] Radar simulation error: {error_msg}")
-            raise HTTPException(status_code=400, detail=error_msg)
+        logger.info(f"[Radar] Endpoint called with: {params.dict()}")
+        result = SimulationService.run_radar(params.dict())
+        return _handle_simulation_response(result, "Radar")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[Route] Radar route exception: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"[Radar] Route exception: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post(
-    "/simulate/ultrasound",
-    response_model=UltrasoundResultSchema,
-    responses={400: {"model": ErrorResponseSchema}, 500: {"model": ErrorResponseSchema}}
-)
-async def ultrasound_route(params: BeamformingParamsSchema):
-    """Ultrasound simulation endpoint"""
+# ============================================================================
+# Ultrasound Endpoint
+# ============================================================================
+
+@router.post("/simulate/ultrasound")
+async def ultrasound_route(params: UltrasoundParamsSchema) -> Dict[str, Any]:
+    """Simulate ultrasound B-mode and Doppler imaging.
+    
+    **Request Parameters:**
+    - `num_elements`: Array elements (32-256)
+    - `spacing`: Element spacing in wavelengths
+    - `frequency`: Ultrasound frequency in Hz (typical: 5e6 for 5 MHz)
+    - `snr_db`: SNR in dB
+    - `max_depth_mm`: Maximum imaging depth in mm
+    - `num_samples`: Axial sample points
+    - `enable_noise`: Add thermal noise
+    - `enable_speckle`: Add speckle pattern (realistic texture)
+    - `run_doppler`: Also compute Doppler velocity imaging
+    - `target_depth_mm`: Depth for Doppler imaging
+    
+    **Returns (B-mode):**
+    - Depth axis (mm) and intensity profile (linear and dB)
+    - Image quality metrics (contrast, SNR)
+    - Tissue layer structure
+    
+    **Returns (Doppler, if requested):**
+    - Doppler frequency spectrum
+    - Mean velocity and pulsatility index
+    - Blood flow velocity estimates
+    """
     try:
-        logger.info("[Route] Ultrasound endpoint called")
-        result = ultrasound_simulation(params.dict())
-        if result.get("success"):
-            logger.info("[Route] Ultrasound route returning success")
-            return result
-        else:
-            error_msg = result.get("error", "Simulation failed")
-            logger.warning(f"[Route] Ultrasound simulation error: {error_msg}")
-            raise HTTPException(status_code=400, detail=error_msg)
+        logger.info(f"[Ultrasound] Endpoint called with: {params.dict()}")
+        result = SimulationService.run_ultrasound(params.dict())
+        return _handle_simulation_response(result, "Ultrasound")
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[Route] Ultrasound route exception: {str(e)}", exc_info=True)
+        logger.error(f"[Ultrasound] Route exception: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Health Check Endpoint
+# ============================================================================
+
+@router.get("/health")
+async def health_check() -> Dict[str, str]:
+    """Health check endpoint to verify API is running.
+    
+    **Returns:**
+    - Status message indicating API health
+    """
+    return {"status": "healthy", "message": "Beamforming simulator API is running"}

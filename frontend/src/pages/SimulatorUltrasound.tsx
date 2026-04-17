@@ -11,31 +11,38 @@ import {
   LineChart, Line,
 } from "recharts";
 
-const defaultParams: BeamformingParams = {
-  numElements: 8,
-  spacing: 0.5,
+const defaultParams: BeamformingParams & Record<string, any> = {
+  numElements: 64,
+  spacing: 0.3,
   wavelength: 1.0,
   steeringAngleDeg: 0,
   amplitude: 1.0,
-  snrDb: 30,
+  snrDb: 25,
   windowType: "rectangular",
   noiseEnabled: true,
   apodizationEnabled: false,
+  // Ultrasound-specific parameters
+  maxDepthMm: 100,
+  numSamples: 512,
+  enableSpeckle: true,
+  runDoppler: false,
+  targetDepthMm: 50,
 };
 
 export default function SimulatorUltrasound() {
-  const [params, setParams] = useState<BeamformingParams>(defaultParams);
+  const [params, setParams] = useState<BeamformingParams & Record<string, any>>(defaultParams);
   const debouncedParams = useDebounce(params, 300);
   const [result, setResult] = useState<SimulatorUltrasoundResponse | null>(null);
   const isInitialLoadRef = useRef(true);
   const [isLoading, setIsLoading] = useState(true);
   const { simulate, error } = useUltrasoundSimulatorAPI();
   const us = useMemo(() => {
-    if (!result?.data) return null;
+    if (!result?.data?.bmode) return null;
     return {
-      depths: result.data.depths || [],
-      amplitudes: result.data.amplitudes || [],
-      reflections: result.data.reflections || [],
+      depths: result.data.bmode.depthsMm || [],
+      amplitudes: result.data.bmode.amplitudes || [],
+      amplitudesDb: result.data.bmode.amplitudesDb || [],
+      metrics: result.data.bmode.metrics || {},
     };
   }, [result]);
   const phantomRef = useRef<HTMLCanvasElement>(null);
@@ -66,7 +73,7 @@ export default function SimulatorUltrasound() {
     };
   }, [debouncedParams, simulate]);
 
-  const updateParam = <K extends keyof BeamformingParams>(key: K, value: BeamformingParams[K]) => {
+  const updateParam = <K extends keyof (BeamformingParams & Record<string, any>)>(key: K, value: any) => {
     setParams((prev) => ({ ...prev, [key]: value }));
   };
 

@@ -1,29 +1,49 @@
-"""Simulators package - specialized simulation modules"""
+"""Simulators package - specialized simulation modules with OOP architecture"""
 
+# 5G Network Simulator
 from .simulator_5g import (
-    simulate_5g,
-    FiveGResult,
+    Simulator5G,
     Tower,
-    User
+    User,
+    TowerConnectivityInfo,
+    FiveGResult
 )
+
+# Radar Simulator
 from .simulator_radar import (
-    simulate_radar,
-    RadarScanResult,
-    RadarTarget
+    SimulatorRadar,
+    RadarTarget,
+    DetectedPeak,
+    RadarScanResult
 )
+
+# Ultrasound Simulator
 from .simulator_ultrasound import (
-    simulate_ultrasound,
-    UltrasoundResult
+    SimulatorUltrasound,
+    TissueLayer,
+    Scatterer,
+    UltrasoundBModeResult,
+    UltrasoundDopplerResult
 )
 
 __all__ = [
-    "simulate_5g",
-    "FiveGResult",
+    # 5G Simulator exports
+    "Simulator5G",
     "Tower",
     "User",
-    "simulate_radar",
-    "RadarScanResult",
+    "TowerConnectivityInfo",
+    "FiveGResult",
+    
+    # Radar Simulator exports
+    "SimulatorRadar",
     "RadarTarget",
-    "simulate_ultrasound",
-    "UltrasoundResult"
+    "DetectedPeak",
+    "RadarScanResult",
+    
+    # Ultrasound Simulator exports
+    "SimulatorUltrasound",
+    "TissueLayer",
+    "Scatterer",
+    "UltrasoundBModeResult",
+    "UltrasoundDopplerResult"
 ]

@@ -13,20 +13,25 @@ import {
   BarChart, Bar, Cell,
 } from "recharts";
 
-const defaultParams: BeamformingParams = {
-  numElements: 8,
+const defaultParams: BeamformingParams & Record<string, any> = {
+  numElements: 32,
   spacing: 0.5,
   wavelength: 1.0,
   steeringAngleDeg: 0,
   amplitude: 1.0,
-  snrDb: 30,
+  snrDb: 15,
   windowType: "rectangular",
   noiseEnabled: true,
   apodizationEnabled: false,
+  // Radar-specific parameters
+  frequency: 10e9,
+  scanRangeDeg: 360,
+  gridSize: 360,
+  computeDoppler: true,
 };
 
 export default function SimulatorRadar() {
-  const [params, setParams] = useState<BeamformingParams>(defaultParams);
+  const [params, setParams] = useState<BeamformingParams & Record<string, any>>(defaultParams);
   const debouncedParams = useDebounce(params, 300);
   const [result, setResult] = useState<SimulatorRadarResponse | null>(null);
   const isInitialLoadRef = useRef(true);
@@ -68,13 +73,14 @@ export default function SimulatorRadar() {
   const radar = useMemo(() => {
     if (!result?.data) return null;
     return {
-      angles: result.data.angles?.filter(Number.isFinite) || [],
-      returns: result.data.returns?.filter(Number.isFinite) || [],
+      angles: result.data.anglesDeg?.filter(Number.isFinite) || [],
+      magnitudes: result.data.magnitudes || [],
+      magnitudesDb: result.data.magnitudesDb || [],
       targets: (result.data.targets || []).filter(
         (t: RadarTarget) => 
-          t && Number.isFinite(t.angle) && Number.isFinite(t.range) && Number.isFinite(t.rcs)
+          t && Number.isFinite(t.angleDeg) && Number.isFinite(t.distanceM) && Number.isFinite(t.rcsDbsm)
       ),
-      beam_width_deg: result.data.beam_width_deg ?? 10,
+      metrics: result.data.metrics || {},
     };
   }, [result]);
 
@@ -106,10 +112,10 @@ export default function SimulatorRadar() {
     ctx.beginPath(); ctx.moveTo(10, cy); ctx.lineTo(size - 10, cy); ctx.stroke();
 
     // Radar returns (polar intensity)
-    if (radar.angles.length > 0 && radar.returns.length > 0) {
-      const maxReturn = Math.max(...radar.returns, 0.001);
+    if (radar.angles.length > 0 && radar.magnitudes.length > 0) {
+      const maxReturn = Math.max(...radar.magnitudes, 0.001);
       radar.angles.forEach((angleDeg, i) => {
-        const intensity = radar.returns[i] ?? 0;
+        const intensity = radar.magnitudes[i] ?? 0;
         if (intensity < 0.01) return;
         const angleRad = (angleDeg - 90) * Math.PI / 180;
         const r = (intensity / maxReturn) * radius * 0.8;
@@ -125,9 +131,9 @@ export default function SimulatorRadar() {
 
     // Targets
     radar.targets.forEach((target: RadarTarget, i: number) => {
-      if (!target || !Number.isFinite(target.angle) || !Number.isFinite(target.range)) return;
-      const angleRad = (target.angle - 90) * Math.PI / 180;
-      const r = (target.range / 10) * radius;
+      if (!target || !Number.isFinite(target.angleDeg) || !Number.isFinite(target.distanceM)) return;
+      const angleRad = (target.angleDeg - 90) * Math.PI / 180;
+      const r = (target.distanceM / 10) * radius;
       const x = cx + Math.cos(angleRad) * r;
       const y = cy + Math.sin(angleRad) * r;
 
@@ -175,24 +181,24 @@ export default function SimulatorRadar() {
   const distTimeData = useMemo(() => 
     radar?.targets?.map((t: RadarTarget, i: number) => ({
       target: `T${i + 1}`,
-      distance: t.range,
-      time: parseFloat(((2 * t.range) / 3e8 * 1e6).toFixed(4)),
+      distance: t.distanceM,
+      time: parseFloat(((2 * t.distanceM) / 3e8 * 1e6).toFixed(4)),
     })) ?? [],
     [radar?.targets]
   );
 
   // Angle detection data
-  const angleDetData = useMemo(() =>
-    (radar?.angles?.length
-      ? radar.angles
-          .filter((_, i) => i % 3 === 0)
-          .map((angle, i) => ({
-            angle,
-            return: parseFloat(((radar.returns?.[i * 3] ?? 0) || 0).toFixed(4)),
-          }))
-      : []),
-    [radar?.angles, radar?.returns]
-  );
+  const angleDetData = useMemo(() => {
+    if (!radar?.angles?.length) return [];
+    const data = [];
+    for (let i = 0; i < radar.angles.length; i += 3) {
+      data.push({
+        angle: radar.angles[i],
+        return: parseFloat(((radar.magnitudes?.[i] ?? 0) || 0).toFixed(4)),
+      });
+    }
+    return data;
+  }, [radar?.angles, radar?.magnitudes]);
 
   // Beam width effect: multiple beam widths
   const beamWidthData = useMemo(() => {

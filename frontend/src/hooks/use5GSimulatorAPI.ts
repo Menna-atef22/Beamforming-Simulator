@@ -1,89 +1,76 @@
+/**
+ * Hook for 5G network simulation API
+ * Handles tower/user management and connectivity analysis
+ */
+
 import { useState, useCallback } from "react";
-import { BeamformingParams } from "@/types/beamforming";
+import type { FiveGParams, FiveGResult, Tower, User } from "../types/beamforming";
 
-const API_BASE = "http://localhost:5000";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
 
-export interface Tower {
-  id: number;
-  x: number;
-  y: number;
-  power: number;
-}
-
-export interface User {
-  id: number;
-  x: number;
-  y: number;
-  signal_strength: number;
-}
-
-export interface BeamPatternData {
-  tower_id: number;
-  angles: number[];
-  magnitudes: number[];
-  magnitudes_db?: number[];
-}
-
+// Type exports for components
 export interface Simulator5GResponse {
   success: boolean;
-  data?: {
-    towers: Tower[];
-    users: User[];
-    beam_patterns: BeamPatternData[];
-  };
-  error?: string;
+  data: FiveGResult;
 }
+export type { Tower, User };
 
 export function use5GSimulatorAPI() {
   const [loading, setLoading] = useState(false);
-  const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const simulate = useCallback(async (params: BeamformingParams, isInitial: boolean = false): Promise<Simulator5GResponse | null> => {
-    // Use full loading only on initial load, use lighter update state for subsequent calls
-    if (isInitial) {
-      setLoading(true);
-    } else {
-      setIsUpdating(true);
-    }
+  const simulate = useCallback(async (
+    params: FiveGParams,
+    _isInitialLoad?: boolean
+  ): Promise<Simulator5GResponse | null> => {
+    setLoading(true);
     setError(null);
 
     try {
+      const requestBody = {
+        num_elements: params.numElements ?? 16,
+        spacing: params.spacing ?? 0.5,
+        frequency: params.frequency ?? 28e9,
+        snr_db: params.snrDb ?? 30,
+        auto_steer: params.autoSteer !== false,
+        enable_noise: params.enableNoise !== false,
+        grid_size: params.gridSize ?? 80,
+      };
+
       const response = await fetch(`${API_BASE}/api/simulate/5g`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          num_elements: params.numElements,
-          spacing: params.spacing,
-          wavelength: params.wavelength,
-          steering_angle_deg: params.steeringAngleDeg,
-          amplitude: params.amplitude,
-          snr_db: params.snrDb,
-          window_type: params.windowType,
-          noise_enabled: params.noiseEnabled,
-          apodization_enabled: params.apodizationEnabled,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-        throw new Error(errorData.error || errorData.detail || `HTTP ${response.status}`);
+        const errorData = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }));
+        throw new Error(errorData.detail || `HTTP ${response.status}`);
       }
 
-      const data = await response.json();
-      return data;
+      const rawData = await response.json();
+      
+      // Transform API response (snake_case) to TypeScript types (camelCase)
+      const data: FiveGResult = {
+        towers: rawData.towers || [],
+        users: rawData.users || [],
+        connectivityMap: rawData.connectivity_map || [],
+        networkCoverage: rawData.network_coverage || {},
+        beamPatterns: rawData.beam_patterns || [],
+      };
+      
+      return { success: true, data };
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : "Unknown error";
-      setError(errorMsg);
-      console.error("[5G API Error]", errorMsg);
+      const message = err instanceof Error ? err.message : "Unknown error";
+      setError(message);
+      console.error("[use5GSimulatorAPI] Error:", message);
       return null;
     } finally {
       setLoading(false);
-      setIsUpdating(false);
     }
   }, []);
 
-  return { simulate, loading, isUpdating, error };
+  return { simulate, loading, error };
 }

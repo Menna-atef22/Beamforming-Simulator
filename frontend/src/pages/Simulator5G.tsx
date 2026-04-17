@@ -12,8 +12,8 @@ import BeamPlot from "@/components/BeamPlot";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import "./Simulator5G.css";
 
-const defaultParams: BeamformingParams = {
-  numElements: 8,
+const defaultParams: BeamformingParams & Record<string, any> = {
+  numElements: 16,
   spacing: 0.5,
   wavelength: 1.0,
   steeringAngleDeg: 0,
@@ -22,10 +22,14 @@ const defaultParams: BeamformingParams = {
   windowType: "rectangular",
   noiseEnabled: true,
   apodizationEnabled: false,
+  // 5G-specific parameters
+  frequency: 28e9,
+  autoSteer: true,
+  gridSize: 80,
 };
 
 export default function Simulator5G() {
-  const [params, setParams] = useState<BeamformingParams>(defaultParams);
+  const [params, setParams] = useState<BeamformingParams & Record<string, any>>(defaultParams);
   const debouncedParams = useDebounce(params, 300);
   const [result, setResult] = useState<Simulator5GResponse | null>(null);
   const isInitialLoadRef = useRef(true);
@@ -64,7 +68,7 @@ export default function Simulator5G() {
 
   // Extract 5G-specific data from API response
   const fiveG = useMemo(() => 
-    result?.data ? { towers: result.data.towers || [], users: result.data.users || [], beam_patterns: result.data.beam_patterns || [] } : null,
+    result?.data ? { towers: result.data.towers || [], users: result.data.users || [], beamPatterns: result.data.beamPatterns || [] } : null,
     [result?.data]
   );
 
@@ -248,12 +252,12 @@ export default function Simulator5G() {
                 </div>
               </div>
             )}
-            {result?.data?.beam_patterns && result.data.beam_patterns.length > 0 ? (
+            {result?.data?.beamPatterns && result.data.beamPatterns.length > 0 ? (
               <BeamPlot 
                 beamPattern={{
-                  angles: result.data.beam_patterns[0].angles ?? [],
-                  magnitudes: result.data.beam_patterns[0].magnitudes ?? [],
-                  magnitudesDb: (result.data.beam_patterns[0].magnitudes ?? []).map(m => 20 * Math.log10(Math.max(m, 1e-6)))
+                  angles: result.data.beamPatterns[0].angles ?? [],
+                  magnitudes: result.data.beamPatterns[0].magnitudes ?? [],
+                  magnitudesDb: (result.data.beamPatterns[0].magnitudes ?? []).map(m => 20 * Math.log10(Math.max(m, 1e-6)))
                 }}
                 title=""
               />

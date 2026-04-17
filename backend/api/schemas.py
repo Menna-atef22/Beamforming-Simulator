@@ -178,3 +178,91 @@ class ErrorResponseSchema(BaseModel):
     """Error response"""
     success: bool = False
     error: str
+
+
+# ============================================================================
+# New Parameter Schemas for OOP Simulators
+# ============================================================================
+
+class FiveGParamsSchema(BaseModel):
+    """5G simulation parameters"""
+    num_elements: int = Field(default=16, ge=4, le=64, description="Antenna elements per tower")
+    spacing: float = Field(default=0.5, gt=0, description="Element spacing in wavelengths")
+    frequency: float = Field(default=28e9, gt=0, description="Operating frequency in Hz")
+    snr_db: float = Field(default=30, ge=-100, le=200, description="SNR in dB")
+    auto_steer: bool = Field(default=True, description="Auto-steer towers toward nearest user")
+    enable_noise: bool = Field(default=False, description="Add noise to simulation")
+    grid_size: int = Field(default=80, ge=16, le=360, description="Angle grid resolution")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "num_elements": 16,
+                "spacing": 0.5,
+                "frequency": 28e9,
+                "snr_db": 30,
+                "auto_steer": True,
+                "enable_noise": False,
+                "grid_size": 80
+            }
+        }
+
+
+class RadarParamsSchema(BaseModel):
+    """Radar simulation parameters"""
+    num_elements: int = Field(default=32, ge=8, le=128, description="Antenna elements")
+    spacing: float = Field(default=0.5, gt=0, description="Element spacing in wavelengths")
+    frequency: float = Field(default=10e9, gt=0, description="Operating frequency in Hz")
+    snr_db: float = Field(default=15, ge=-100, le=200, description="SNR in dB")
+    steering_angle_deg: float = Field(default=0, ge=-180, le=180, description="Beam steering angle")
+    scan_range_deg: float = Field(default=360, gt=0, le=360, description="Angular scan range")
+    enable_noise: bool = Field(default=True, description="Add noise and clutter")
+    grid_size: int = Field(default=360, ge=64, le=1024, description="Angle bins")
+    compute_doppler: bool = Field(default=True, description="Compute Doppler map")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "num_elements": 32,
+                "spacing": 0.5,
+                "frequency": 10e9,
+                "snr_db": 15,
+                "steering_angle_deg": 0,
+                "scan_range_deg": 360,
+                "enable_noise": True,
+                "grid_size": 360,
+                "compute_doppler": True
+            }
+        }
+
+
+class UltrasoundParamsSchema(BaseModel):
+    """Ultrasound simulation parameters"""
+    num_elements: int = Field(default=64, ge=32, le=256, description="Array elements")
+    spacing: float = Field(default=0.3, gt=0, description="Element spacing in wavelengths")
+    frequency: float = Field(default=5e6, gt=0, description="Ultrasound frequency in Hz")
+    snr_db: float = Field(default=25, ge=-100, le=200, description="SNR in dB")
+    steering_angle_deg: float = Field(default=0, ge=-90, le=90, description="Beam steering angle in degrees")
+    max_depth_mm: float = Field(default=100, gt=0, description="Maximum imaging depth in mm")
+    num_samples: int = Field(default=512, ge=128, le=2048, description="Depth sample points")
+    enable_noise: bool = Field(default=True, description="Add thermal noise")
+    enable_speckle: bool = Field(default=True, description="Add speckle pattern")
+    run_doppler: bool = Field(default=False, description="Compute Doppler imaging")
+    target_depth_mm: float = Field(default=50, gt=0, description="Doppler imaging depth in mm")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "num_elements": 64,
+                "spacing": 0.3,
+                "frequency": 5e6,
+                "snr_db": 25,
+                "steering_angle_deg": 0,
+                "max_depth_mm": 100,
+                "num_samples": 512,
+                "enable_noise": True,
+                "enable_speckle": True,
+                "run_doppler": False,
+                "target_depth_mm": 50
+            }
+        }

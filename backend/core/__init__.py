@@ -1,48 +1,65 @@
-"""Beamforming core engine package"""
+"""Beamforming core engine package with OOP architecture"""
 
-from .array_model import ArrayElement, create_linear_array
+# Array model
+from .array_model import ArrayElement, ArrayModel
+
+# Signal model
 from .signal_model import (
+    SignalModel,
     wave_number,
     phase_shift,
     element_signal,
     array_factor,
     array_factor_weighted
 )
-from .noise_model import gaussian_random, add_noise, add_noise_to_array
-from .window_functions import apply_window
-from .interference_map import generate_interference_map, InterferenceMapData
+
+# Noise model
+from .noise_model import NoiseModel, gaussian_random, add_noise, add_noise_to_array
+
+# Window functions
+from .window_functions import WindowFunction, apply_window
+
+# Interference map
+from .interference_map import InterferenceMap, InterferenceMapResult
+
+# Beamforming engine
 from .beamforming_engine import (
-    BeamformingParams,
+    BeamformingEngine,
     BeamPattern,
     BeamMetrics,
-    BeamformingResult,
-    compute_beam_pattern,
-    compute_metrics,
-    run_simulation,
-    deg_to_rad
+    BeamformingResult
 )
 
 __all__ = [
+    # Array model
     "ArrayElement",
-    "create_linear_array",
+    "ArrayModel",
+    
+    # Signal model
+    "SignalModel",
     "wave_number",
     "phase_shift",
     "element_signal",
     "array_factor",
     "array_factor_weighted",
+    
+    # Noise model
+    "NoiseModel",
     "gaussian_random",
     "add_noise",
     "add_noise_to_array",
+    
+    # Window functions
+    "WindowFunction",
     "apply_window",
-    "generate_interference_map",
-    "InterferenceMapData",
-    "BeamformingParams",
+    
+    # Interference map
+    "InterferenceMap",
+    "InterferenceMapResult",
+    
+    # Beamforming engine
+    "BeamformingEngine",
     "BeamPattern",
     "BeamMetrics",
-    "BeamformingResult",
-    "compute_beam_pattern",
-    "compute_metrics",
-    "run_simulation",
-    "deg_to_rad"
+    "BeamformingResult"
 ]
-

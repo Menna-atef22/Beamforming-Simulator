@@ -29,7 +29,9 @@ def serialize_beam_metrics(metrics) -> Dict[str, Any]:
     return {
         "beamwidth_deg": metrics.beamwidth_deg,
         "sll_db": metrics.sll_db,
-        "main_lobe_angle_deg": metrics.main_lobe_angle_deg
+        "main_lobe_angle_deg": metrics.main_lobe_angle_deg,
+        "directivity_db": getattr(metrics, "directivity_db", 0.0),
+        "gain_peak": getattr(metrics, "gain_peak", 1.0)
     }
 
 
@@ -46,7 +48,6 @@ def serialize_interference_map(imap) -> Dict[str, Any]:
 def serialize_beamforming_result(result) -> Dict[str, Any]:
     """Serialize BeamformingResult to API response format"""
     return {
-        "array": [serialize_array_element(elem) for elem in result.array],
         "beam_pattern": serialize_beam_pattern(result.beam_pattern),
         "beam_pattern_no_steer": serialize_beam_pattern(result.beam_pattern_no_steer),
         "interference_map": serialize_interference_map(result.interference_map),
@@ -58,14 +59,18 @@ def serialize_beamforming_result(result) -> Dict[str, Any]:
 def serialize_5g_result(result) -> Dict[str, Any]:
     """Serialize 5G simulation result"""
     beam_patterns = []
-    for bp in result.beam_patterns:
-        magnitudes = bp.get("magnitudes", [])
-        beam_patterns.append({
-            "tower_id": bp.get("tower_id"),
-            "angles": bp.get("angles", []),
-            "magnitudes": magnitudes,
-            "magnitudes_db": [20 * math.log10(max(m, 1e-6)) for m in magnitudes]
-        })
+    if hasattr(result, 'beam_patterns') and result.beam_patterns:
+        for bp in result.beam_patterns:
+            if isinstance(bp, dict):
+                magnitudes = bp.get("magnitudes", [])
+            else:
+                magnitudes = getattr(bp, 'magnitudes', [])
+            beam_patterns.append({
+                "tower_id": bp.get("tower_id") if isinstance(bp, dict) else getattr(bp, "tower_id", 0),
+                "angles": bp.get("angles", []) if isinstance(bp, dict) else getattr(bp, "angles", []),
+                "magnitudes": magnitudes,
+                "magnitudes_db": [20 * math.log10(max(m, 1e-6)) for m in magnitudes]
+            })
     
     return {
         "towers": [
@@ -73,7 +78,9 @@ def serialize_5g_result(result) -> Dict[str, Any]:
                 "id": tower.id,
                 "x": tower.x,
                 "y": tower.y,
-                "steering_angle_deg": tower.steering_angle_deg
+                "steering_angle_deg": tower.steering_angle_deg,
+                "beamwidth_deg": getattr(tower, "beamwidth_deg", 10.0),
+                "max_gain_db": getattr(tower, "max_gain_db", 0.0)
             }
             for tower in result.towers
         ],
@@ -82,37 +89,113 @@ def serialize_5g_result(result) -> Dict[str, Any]:
                 "id": user.id,
                 "x": user.x,
                 "y": user.y,
-                "signal_strength": user.signal_strength
+                "signal_strength": user.signal_strength,
+                "snr_db": getattr(user, "snr_db", 30.0)
             }
             for user in result.users
         ],
+        "connectivity_map": [
+            {
+                "tower_id": c.tower_id if hasattr(c, "tower_id") else c.get("tower_id"),
+                "user_id": c.user_id if hasattr(c, "user_id") else c.get("user_id"),
+                "distance_m": c.distance_m if hasattr(c, "distance_m") else c.get("distance_m"),
+                "angle_to_user_deg": c.angle_to_user_deg if hasattr(c, "angle_to_user_deg") else c.get("angle_to_user_deg"),
+                "angle_offset_from_beam_deg": c.angle_offset_from_beam_deg if hasattr(c, "angle_offset_from_beam_deg") else c.get("angle_offset_from_beam_deg"),
+                "gain_at_user": c.gain_at_user if hasattr(c, "gain_at_user") else c.get("gain_at_user"),
+                "path_loss_db": c.path_loss_db if hasattr(c, "path_loss_db") else c.get("path_loss_db"),
+                "signal_strength": c.signal_strength if hasattr(c, "signal_strength") else c.get("signal_strength")
+            }
+            for c in (result.connectivity_map if hasattr(result, "connectivity_map") else [])
+        ],
+        "network_coverage": result.network_coverage if hasattr(result, "network_coverage") else {},
         "beam_patterns": beam_patterns
     }
 
 
 def serialize_radar_result(result) -> Dict[str, Any]:
     """Serialize Radar simulation result"""
+    targets = []
+    if hasattr(result, 'targets'):
+        for i, target in enumerate(result.targets):
+            targets.append({
+                "id": getattr(target, "id", i),
+                "angle_deg": getattr(target, "angle_deg", 0.0),
+                "distance_m": getattr(target, "distance_m", 0.0),
+                "rcs_dbsm": getattr(target, "rcs_dbsm", 0.0),
+                "velocity_mps": getattr(target, "velocity_mps", 0.0)
+            })
+    
+    detections = []
+    if hasattr(result, 'detections'):
+        for detection in result.detections:
+            detections.append({
+                "angle_deg": getattr(detection, "angle_deg", 0.0),
+                "distance_m": getattr(detection, "distance_m", 0.0),
+                "snr_db": getattr(detection, "snr_db", 0.0),
+                "power": getattr(detection, "power", 0.0),
+                "confidence": getattr(detection, "confidence", 0.0)
+            })
+    
+    range_doppler_map = {}
+    if hasattr(result, 'range_doppler_map'):
+        range_doppler_map = {
+            "ranges_m": getattr(result.range_doppler_map, "ranges_m", []),
+            "doppler_shifts_hz": getattr(result.range_doppler_map, "doppler_shifts_hz", []),
+            "velocities_mps": getattr(result.range_doppler_map, "velocities_mps", [])
+        }
+    
+    metrics = {}
+    if hasattr(result, 'metrics'):
+        metrics = {
+            "num_targets": getattr(result.metrics, "num_targets", 0),
+            "num_detections": getattr(result.metrics, "num_detections", 0),
+            "detection_rate": getattr(result.metrics, "detection_rate", 0.0),
+            "false_alarms": getattr(result.metrics, "false_alarms", 0),
+            "avg_snr_db": getattr(result.metrics, "avg_snr_db", 0.0),
+            "avg_confidence": getattr(result.metrics, "avg_confidence", 0.0)
+        }
+    
     return {
-        "angles": result.angles,
-        "returns": result.returns,
-        "targets": [
-            {
-                "id": i,
-                "angle": target.angle_deg,
-                "range": target.distance,
-                "velocity": 0.0,  # Static targets in simulation
-                "rcs": target.rcs
-            }
-            for i, target in enumerate(result.targets)
-        ],
-        "beam_width_deg": result.beam_width_deg
+        "angles": getattr(result, "angles_deg", []),
+        "magnitudes": getattr(result, "magnitudes", []),
+        "magnitudes_db": getattr(result, "magnitudes_db", []),
+        "targets": targets,
+        "detections": detections,
+        "range_doppler_map": range_doppler_map,
+        "metrics": metrics,
+        "beam_width_deg": getattr(result, "beam_width_deg", 10.0)
     }
 
 
 def serialize_ultrasound_result(result) -> Dict[str, Any]:
     """Serialize Ultrasound simulation result"""
+    bmode = {}
+    if hasattr(result, 'bmode'):
+        bmode = {
+            "depths_mm": getattr(result.bmode, "depths_mm", []),
+            "amplitudes": getattr(result.bmode, "amplitudes", []),
+            "amplitudes_db": getattr(result.bmode, "amplitudes_db", []),
+            "metrics": {
+                "contrast_db": getattr(result.bmode.metrics if hasattr(result.bmode, "metrics") else {}, "contrast_db", 0.0),
+                "speckle_snr_db": getattr(result.bmode.metrics if hasattr(result.bmode, "metrics") else {}, "speckle_snr_db", 0.0),
+                "penetration_depth_mm": getattr(result.bmode.metrics if hasattr(result.bmode, "metrics") else {}, "penetration_depth_mm", 0.0),
+                "focal_depth_mm": getattr(result.bmode.metrics if hasattr(result.bmode, "metrics") else {}, "focal_depth_mm", 0.0),
+                "dynamic_range_db": getattr(result.bmode.metrics if hasattr(result.bmode, "metrics") else {}, "dynamic_range_db", 0.0)
+            }
+        }
+    
+    doppler = {}
+    if hasattr(result, 'doppler') and result.doppler:
+        doppler = {
+            "frequencies_hz": getattr(result.doppler, "frequencies_hz", []),
+            "power": getattr(result.doppler, "power", []),
+            "power_db": getattr(result.doppler, "power_db", []),
+            "mean_velocity_mms": getattr(result.doppler, "mean_velocity_mms", 0.0),
+            "max_velocity_mms": getattr(result.doppler, "max_velocity_mms", 0.0),
+            "pulsatility_index": getattr(result.doppler, "pulsatility_index", 0.0)
+        }
+    
     return {
-        "depths": result.depths,
-        "amplitudes": result.amplitudes,
-        "reflections": result.reflections
+        "bmode": bmode,
+        "doppler": doppler if doppler else None
     }
