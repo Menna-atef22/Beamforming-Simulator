@@ -142,7 +142,6 @@ class BeamformingEngine:
         
         angles = []
         magnitudes = []
-        magnitudes_db = []
         
         # Compute array factor across angular range
         num_angles = int(self.DEFAULT_ANGLE_RANGE / angle_step) + 1
@@ -159,9 +158,16 @@ class BeamformingEngine:
             
             angles.append(angle_deg)
             magnitudes.append(af_mag)
-            
-            # Convert to dB: 20*log10(mag)
-            mag_db = 20 * math.log10(max(af_mag, 1e-10))
+        
+        # Find peak magnitude for normalization
+        max_mag = max(magnitudes) if magnitudes else 1.0
+        if max_mag <= 0:
+            max_mag = 1.0
+        
+        # Convert to dB: 20*log10(mag/max_mag) - normalized to peak = 0 dB
+        magnitudes_db = []
+        for mag in magnitudes:
+            mag_db = 20 * math.log10(max(mag / max_mag, 1e-10))
             magnitudes_db.append(mag_db)
         
         return BeamPattern(
@@ -215,26 +221,23 @@ class BeamformingEngine:
         
         beamwidth_deg = abs(beam_pattern.angles[right_idx] - beam_pattern.angles[left_idx])
         
-        # Compute peak sidelobe level
+        # Compute peak sidelobe level (excluding main lobe)
         sidelobe_peak = 0.0
+        main_lobe_range = set(range(max(0, left_idx - 2), min(right_idx + 3, len(beam_pattern.magnitudes))))
         
-        # Search sidelobes to the left (before main lobe)
-        for i in range(max(0, left_idx - 5)):
-            sidelobe_peak = max(sidelobe_peak, beam_pattern.magnitudes[i])
-        
-        # Search sidelobes to the right (after main lobe)
-        for i in range(min(right_idx + 5, len(beam_pattern.magnitudes))):
-            sidelobe_peak = max(sidelobe_peak, beam_pattern.magnitudes[i])
-        
-        # Remove main lobe from sidelobe search (avoid double-counting)
-        sidelobe_peak = min(sidelobe_peak, max_mag * 0.99)
+        for i in range(len(beam_pattern.magnitudes)):
+            if i not in main_lobe_range:
+                sidelobe_peak = max(sidelobe_peak, beam_pattern.magnitudes[i])
         
         # SLL in dB relative to main lobe
-        sll_db = 20 * math.log10(max(sidelobe_peak, 1e-10) / max_mag) if sidelobe_peak > 0 else -40.0
+        if sidelobe_peak > 1e-10 and max_mag > 1e-10:
+            sll_db = 20 * math.log10(sidelobe_peak / max_mag)
+        else:
+            sll_db = -60.0
         
         # Compute directivity index
         avg_mag = sum(beam_pattern.magnitudes) / len(beam_pattern.magnitudes)
-        if avg_mag > 0:
+        if avg_mag > 1e-10:
             directivity_db = 10 * math.log10(max_mag / avg_mag)
         else:
             directivity_db = 0.0
