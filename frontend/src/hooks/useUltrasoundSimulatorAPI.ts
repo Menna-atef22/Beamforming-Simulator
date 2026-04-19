@@ -73,6 +73,7 @@ export function useUltrasoundSimulatorAPI() {
         spacing: params.spacing ?? 0.3,
         frequency: params.frequency ?? 5e6,
         snr_db: params.snrDb ?? 25,
+        window_type: params.windowType ?? "rectangular",
         steering_angle_deg: params.steeringAngleDeg ?? 0,
         max_depth_mm: params.maxDepthMm ?? 100,
         num_samples: params.numSamples ?? 512,

@@ -194,6 +194,7 @@ class SimulationService:
             spacing = params_dict.get("spacing", 0.3)
             frequency = params_dict.get("frequency", 5e6)
             snr_db = params_dict.get("snr_db", 25)
+            window_type = params_dict.get("window_type", "rectangular")
             max_depth_mm = params_dict.get("max_depth_mm", 100)
             num_samples = params_dict.get("num_samples", 512)
             enable_noise = params_dict.get("enable_noise", True)
@@ -207,7 +208,8 @@ class SimulationService:
                 num_elements=num_elements,
                 spacing=spacing,
                 frequency=frequency,
-                snr_db=snr_db
+                snr_db=snr_db,
+                window_type=window_type,
             )
 
             if isinstance(phantom_regions, list) and phantom_regions:

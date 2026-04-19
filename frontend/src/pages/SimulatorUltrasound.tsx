@@ -5,6 +5,8 @@ import { BeamformingParams, PhantomEllipse } from "@/types/beamforming";
 import { useUltrasoundSimulatorAPI, SimulatorUltrasoundResponse } from "@/hooks/useUltrasoundSimulatorAPI";
 import { useDebounce } from "@/hooks/useDebounce";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Slider } from "@/components/ui/slider";
+import { Label } from "@/components/ui/label";
 import "./SimulatorUltrasound.css";
 import {
   ResponsiveContainer,
@@ -43,6 +45,45 @@ type EditableNumericField =
   | "scatterDensity"
   | "boundaryRoughness";
 
+type VesselState = {
+  x0: number;
+  y0: number;
+  a: number;
+  b: number;
+};
+
+const AUTO_SCAN_STEP_RAD = 0.015;
+const TOTAL_SCAN_POSITIONS = Math.floor((Math.PI * 2) / AUTO_SCAN_STEP_RAD) + 1;
+
+const BEAM_FIELD_SIZE = 300;
+const BMODE_DISPLAY_WIDTH = 360;
+const BMODE_DISPLAY_HEIGHT = 260;
+const BMODE_SECTOR_HALF_ANGLE_RAD = (35 * Math.PI) / 180;
+
+const getBeamFieldWindowWeights = (windowType: string, numElements: number) => {
+  if (numElements <= 1) return [1];
+
+  const weights: number[] = [];
+  const denom = numElements - 1;
+
+  for (let n = 0; n < numElements; n += 1) {
+    const base = (2 * Math.PI * n) / denom;
+    let w = 1;
+
+    if (windowType === "hamming") {
+      w = 0.54 - 0.46 * Math.cos(base);
+    } else if (windowType === "hanning") {
+      w = 0.5 * (1 - Math.cos(base));
+    } else if (windowType === "blackman") {
+      w = 0.42 - 0.5 * Math.cos(base) + 0.08 * Math.cos(2 * base);
+    }
+
+    weights.push(w);
+  }
+
+  return weights;
+};
+
 const defaultParams: UltrasoundUIParams = {
   numElements: 64,
   spacing: 0.3,
@@ -72,12 +113,32 @@ export default function SimulatorUltrasound() {
   const [probeParamRad, setProbeParamRad] = useState(Math.PI / 2);
   const debouncedProbeParamRad = useDebounce(probeParamRad, 80);
   const [isDraggingProbe, setIsDraggingProbe] = useState(false);
+  const [autoScanActive, setAutoScanActive] = useState(false);
+  const [autoScanProgress, setAutoScanProgress] = useState(0);
+  const [latestColumnProbeParamRad, setLatestColumnProbeParamRad] = useState(Math.PI / 2);
+  const [vessel, setVessel] = useState<VesselState>({ x0: 0.18, y0: -0.15, a: 0.18, b: 0.06 });
+  const [isDraggingVessel, setIsDraggingVessel] = useState(false);
+  const [bloodVelocityCms, setBloodVelocityCms] = useState(24);
+  const [flowAngleDeg, setFlowAngleDeg] = useState(20);
   const isInitialLoadRef = useRef(true);
+  const wasAutoScanActiveRef = useRef(false);
+  const preserveAutoScanResultRef = useRef<{ paramsKey: string; probeParamRad: number } | null>(null);
+  const lastIdleInputRef = useRef<{ params: UltrasoundUIParams; probeParamRad: number } | null>(null);
   const draggedProbeRef = useRef(false);
+  const draggedVesselRef = useRef(false);
+  const autoScanStartParamRef = useRef<number>(0);
+  const autoScanParamsRef = useRef<UltrasoundUIParams | null>(null);
+  const bmodeBufferRef = useRef<Uint8ClampedArray | null>(null);
+  const bmodeAmplitudeBufferRef = useRef<Float32Array | null>(null);
+  const bmodeGlobalMaxAmplitudeRef = useRef(0);
+  const bmodeWidthRef = useRef(TOTAL_SCAN_POSITIONS);
+  const bmodeHeightRef = useRef(Math.max(defaultParams.numSamples, 1));
+  const vesselDragOffsetRef = useRef({ dx: 0, dy: 0 });
 
   const { simulate, error } = useUltrasoundSimulatorAPI();
   const phantomRef = useRef<HTMLCanvasElement>(null);
   const bmodeRef = useRef<HTMLCanvasElement>(null);
+  const beamFieldRef = useRef<HTMLCanvasElement>(null);
 
   const us = useMemo(() => {
     if (!result?.data?.bmode) return null;
@@ -157,6 +218,48 @@ export default function SimulatorUltrasound() {
     );
   };
 
+  const isPointInEllipse = (xNorm: number, yNorm: number, ellipse: { x0: number; y0: number; a: number; b: number; phiDeg?: number }) => {
+    const phi = ((ellipse.phiDeg ?? 0) * Math.PI) / 180;
+    const cosPhi = Math.cos(phi);
+    const sinPhi = Math.sin(phi);
+    const dx = xNorm - ellipse.x0;
+    const dy = yNorm - ellipse.y0;
+    const xRot = dx * cosPhi + dy * sinPhi;
+    const yRot = -dx * sinPhi + dy * cosPhi;
+    const norm = (xRot * xRot) / Math.max(ellipse.a * ellipse.a, 1e-9) + (yRot * yRot) / Math.max(ellipse.b * ellipse.b, 1e-9);
+    return norm <= 1;
+  };
+
+  const isPointInsideOuterBoundary = (xNorm: number, yNorm: number) => {
+    if (!outerBoundary) return false;
+    return isPointInEllipse(xNorm, yNorm, outerBoundary);
+  };
+
+  const doesRayIntersectVessel = (
+    originX: number,
+    originY: number,
+    dirX: number,
+    dirY: number,
+    vesselShape: VesselState
+  ) => {
+    const ox = originX - vesselShape.x0;
+    const oy = originY - vesselShape.y0;
+    const dx = dirX;
+    const dy = dirY;
+
+    const aCoeff = (dx * dx) / Math.max(vesselShape.a * vesselShape.a, 1e-9) + (dy * dy) / Math.max(vesselShape.b * vesselShape.b, 1e-9);
+    const bCoeff = 2 * ((ox * dx) / Math.max(vesselShape.a * vesselShape.a, 1e-9) + (oy * dy) / Math.max(vesselShape.b * vesselShape.b, 1e-9));
+    const cCoeff = (ox * ox) / Math.max(vesselShape.a * vesselShape.a, 1e-9) + (oy * oy) / Math.max(vesselShape.b * vesselShape.b, 1e-9) - 1;
+
+    const disc = bCoeff * bCoeff - 4 * aCoeff * cCoeff;
+    if (disc < 0) return false;
+
+    const sqrtDisc = Math.sqrt(disc);
+    const t1 = (-bCoeff - sqrtDisc) / Math.max(2 * aCoeff, 1e-9);
+    const t2 = (-bCoeff + sqrtDisc) / Math.max(2 * aCoeff, 1e-9);
+    return t1 >= 0 || t2 >= 0;
+  };
+
   const hoveredRegionData = hoveredRegion ? phantomRegions[hoveredRegion.regionIndex] : null;
 
   useEffect(() => {
@@ -175,6 +278,27 @@ export default function SimulatorUltrasound() {
   }, [us?.phantom]);
 
   useEffect(() => {
+    const justFinishedAutoScan = wasAutoScanActiveRef.current && !autoScanActive;
+    wasAutoScanActiveRef.current = autoScanActive;
+
+    if (justFinishedAutoScan) return;
+    if (autoScanActive) return;
+
+    const preserved = preserveAutoScanResultRef.current;
+    if (preserved) {
+      const currentParamsKey = JSON.stringify(debouncedParams);
+      const twoPi = Math.PI * 2;
+      const normalize = (a: number) => ((a % twoPi) + twoPi) % twoPi;
+      const sameProbeDebounced = Math.abs(normalize(debouncedProbeParamRad) - normalize(preserved.probeParamRad)) < 1e-6;
+      const sameProbeCurrent = Math.abs(normalize(probeParamRad) - normalize(preserved.probeParamRad)) < 1e-6;
+
+      if (currentParamsKey === preserved.paramsKey && (sameProbeDebounced || sameProbeCurrent)) {
+        return;
+      }
+
+      preserveAutoScanResultRef.current = null;
+    }
+
     let isMounted = true;
 
     const runSim = async () => {
@@ -188,6 +312,11 @@ export default function SimulatorUltrasound() {
       const res = await simulate(simulationParams, isInitialLoadRef.current);
       if (isMounted && res?.success) {
         setResult(res);
+        setLatestColumnProbeParamRad(debouncedProbeParamRad);
+        lastIdleInputRef.current = {
+          params: { ...debouncedParams },
+          probeParamRad: debouncedProbeParamRad,
+        };
         isInitialLoadRef.current = false;
       }
     };
@@ -196,7 +325,7 @@ export default function SimulatorUltrasound() {
     return () => {
       isMounted = false;
     };
-  }, [debouncedParams, debouncedProbeParamRad, simulate]);
+  }, [autoScanActive, debouncedParams, debouncedProbeParamRad, probeParamRad, simulate]);
 
   const updateParam = <K extends keyof UltrasoundUIParams>(key: K, value: UltrasoundUIParams[K]) => {
     setParams((prev) => ({ ...prev, [key]: value }));
@@ -280,6 +409,32 @@ export default function SimulatorUltrasound() {
         })) ?? [],
     [us?.depths, us?.amplitudes]
   );
+
+  const dopplerState = useMemo(() => {
+    const pose = computeProbePose(probeParamRad);
+    if (!pose) {
+      return { intersects: false, fdHz: 0, dirX: 0, dirY: -1 };
+    }
+
+    const steerRad = ((params.steeringAngleDeg ?? 0) * Math.PI) / 180;
+    const dirX = pose.inwardX * Math.cos(steerRad) - pose.inwardY * Math.sin(steerRad);
+    const dirY = pose.inwardX * Math.sin(steerRad) + pose.inwardY * Math.cos(steerRad);
+
+    const intersects = doesRayIntersectVessel(pose.xNorm, pose.yNorm, dirX, dirY, vessel);
+    if (!intersects) {
+      return { intersects: false, fdHz: 0, dirX, dirY };
+    }
+
+    const vMs = bloodVelocityCms / 100;
+    const f0Hz = 5e6 / Math.max(params.wavelength, 0.1);
+    const c = 1540;
+    const beamAngle = Math.atan2(dirY, dirX);
+    const flowRad = (flowAngleDeg * Math.PI) / 180;
+    const theta = flowRad - beamAngle;
+    const fdHz = (2 * vMs * Math.cos(theta) * f0Hz) / c;
+
+    return { intersects: true, fdHz, dirX, dirY };
+  }, [bloodVelocityCms, flowAngleDeg, params.steeringAngleDeg, params.wavelength, probeParamRad, vessel]);
 
   useEffect(() => {
     const canvas = phantomRef.current;
@@ -378,6 +533,30 @@ export default function SimulatorUltrasound() {
     ctx.lineWidth = 1.5;
     ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
 
+    const vesselX = ((vessel.x0 + 1) / 2) * w;
+    const vesselY = ((1 - vessel.y0) / 2) * h;
+    const vesselRx = Math.max(2, (vessel.a / 2) * w);
+    const vesselRy = Math.max(2, (vessel.b / 2) * h);
+
+    ctx.save();
+    ctx.fillStyle = dopplerState.intersects ? "hsla(0, 90%, 56%, 0.30)" : "hsla(200, 80%, 52%, 0.26)";
+    ctx.strokeStyle = dopplerState.intersects ? "hsla(0, 95%, 62%, 0.95)" : "hsla(200, 82%, 60%, 0.92)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(vesselX, vesselY, vesselRx, vesselRy, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    const flowRad = (flowAngleDeg * Math.PI) / 180;
+    const flowHalf = vesselRx * 0.8;
+    ctx.strokeStyle = "hsla(10, 95%, 72%, 0.95)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(vesselX - Math.cos(flowRad) * flowHalf, vesselY + Math.sin(flowRad) * flowHalf);
+    ctx.lineTo(vesselX + Math.cos(flowRad) * flowHalf, vesselY - Math.sin(flowRad) * flowHalf);
+    ctx.stroke();
+    ctx.restore();
+
     const probePose = computeProbePose(probeParamRad);
     if (probePose) {
       const steerRad = ((params.steeringAngleDeg ?? 0) * Math.PI) / 180;
@@ -426,7 +605,7 @@ export default function SimulatorUltrasound() {
       ctx.fillText("PROBE", labelX, labelY);
       ctx.restore();
     }
-  }, [hoveredRegion, params.steeringAngleDeg, phantomRegions, probeParamRad, selectedRegionIndex]);
+  }, [dopplerState.intersects, flowAngleDeg, hoveredRegion, params.steeringAngleDeg, phantomRegions, probeParamRad, selectedRegionIndex, vessel]);
 
   useEffect(() => {
     const canvas = phantomRef.current;
@@ -457,17 +636,27 @@ export default function SimulatorUltrasound() {
 
     const handlePointerDown = (event: MouseEvent) => {
       const { canvasX, canvasY, xNorm, yNorm } = toCanvasCoords(event);
-      if (!isNearCurrentProbe(canvasX, canvasY)) return;
 
-      const projectedParam = projectPointToBoundaryParam(xNorm, yNorm);
-      if (projectedParam !== null) {
-        setProbeParamRad(projectedParam);
+      if (isNearCurrentProbe(canvasX, canvasY)) {
+        const projectedParam = projectPointToBoundaryParam(xNorm, yNorm);
+        if (projectedParam !== null) {
+          setProbeParamRad(projectedParam);
+        }
+
+        draggedProbeRef.current = false;
+        setIsDraggingProbe(true);
+        setHoveredRegion(null);
+        event.preventDefault();
+        return;
       }
 
-      draggedProbeRef.current = false;
-      setIsDraggingProbe(true);
-      setHoveredRegion(null);
-      event.preventDefault();
+      if (isPointInEllipse(xNorm, yNorm, vessel)) {
+        vesselDragOffsetRef.current = { dx: xNorm - vessel.x0, dy: yNorm - vessel.y0 };
+        draggedVesselRef.current = false;
+        setIsDraggingVessel(true);
+        setHoveredRegion(null);
+        event.preventDefault();
+      }
     };
 
     const handlePointerMove = (event: MouseEvent) => {
@@ -478,6 +667,18 @@ export default function SimulatorUltrasound() {
         if (projectedParam !== null) {
           setProbeParamRad(projectedParam);
           draggedProbeRef.current = true;
+          setHoveredRegion(null);
+        }
+        return;
+      }
+
+      if (isDraggingVessel) {
+        const nextX = xNorm - vesselDragOffsetRef.current.dx;
+        const nextY = yNorm - vesselDragOffsetRef.current.dy;
+
+        if (isPointInsideOuterBoundary(nextX, nextY)) {
+          setVessel((prev) => ({ ...prev, x0: nextX, y0: nextY }));
+          draggedVesselRef.current = true;
           setHoveredRegion(null);
         }
         return;
@@ -503,13 +704,16 @@ export default function SimulatorUltrasound() {
     };
 
     const handlePointerLeave = () => {
-      if (isDraggingProbe) return;
+      if (isDraggingProbe || isDraggingVessel) return;
       setHoveredRegion(null);
     };
 
     const handlePointerUp = () => {
       if (isDraggingProbe) {
         setIsDraggingProbe(false);
+      }
+      if (isDraggingVessel) {
+        setIsDraggingVessel(false);
       }
     };
 
@@ -518,6 +722,11 @@ export default function SimulatorUltrasound() {
 
       if (draggedProbeRef.current || isNearCurrentProbe(canvasX, canvasY)) {
         draggedProbeRef.current = false;
+        return;
+      }
+
+      if (draggedVesselRef.current || isPointInEllipse(xNorm, yNorm, vessel)) {
+        draggedVesselRef.current = false;
         return;
       }
 
@@ -541,56 +750,398 @@ export default function SimulatorUltrasound() {
       canvas.removeEventListener("click", handleClick);
       window.removeEventListener("mouseup", handlePointerUp);
     };
-  }, [isDraggingProbe, outerBoundary, phantomRegions, probeParamRad]);
+  }, [isDraggingProbe, isDraggingVessel, outerBoundary, phantomRegions, probeParamRad, vessel]);
 
-  useEffect(() => {
+  const redrawBmodeBuffer = () => {
     const canvas = bmodeRef.current;
-    if (!canvas || !us) return;
+    const buffer = bmodeBufferRef.current;
+    if (!canvas || !buffer) return;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const w = (canvas.width = 200);
-    const h = (canvas.height = 300);
-    const imageData = ctx.createImageData(w, h);
+    const sourceWidth = bmodeWidthRef.current;
+    const sourceHeight = bmodeHeightRef.current;
+    const displayWidth = BMODE_DISPLAY_WIDTH;
+    const displayHeight = BMODE_DISPLAY_HEIGHT;
 
-    const maxAmp = Math.max(...us.amplitudes, 0.001);
+    canvas.width = displayWidth;
+    canvas.height = displayHeight;
 
-    for (let y = 0; y < h; y += 1) {
-      const depthIdx = Math.floor((y / h) * us.amplitudes.length);
-      for (let x = 0; x < w; x += 1) {
-        const centerDist = Math.abs(x - w / 2) / (w / 2);
-        const beamFalloff = Math.exp(-centerDist * centerDist * 3);
-        const amp = (us.amplitudes[depthIdx] ?? 0) * beamFalloff;
-        const brightness = Math.min(255, Math.round((amp / maxAmp) * 255));
-        const idx = (y * w + x) * 4;
-        imageData.data[idx] = brightness;
-        imageData.data[idx + 1] = brightness;
-        imageData.data[idx + 2] = brightness;
-        imageData.data[idx + 3] = 255;
+    const image = ctx.createImageData(displayWidth, displayHeight);
+    const centerX = displayWidth / 2;
+    const apexY = Math.round(displayHeight * 0.02);
+    const nearDepthPx = Math.max(4, Math.round(displayHeight * 0.06));
+    const depthSpanPx = Math.max(1, Math.round(displayHeight * 0.9));
+
+    for (let py = 0; py < displayHeight; py += 1) {
+      const yFromApex = py - apexY;
+      const depthNorm = (yFromApex - nearDepthPx) / depthSpanPx;
+
+      for (let px = 0; px < displayWidth; px += 1) {
+        const pixelIdx = (py * displayWidth + px) * 4;
+        let intensity = 0;
+
+        if (depthNorm >= 0 && depthNorm <= 1) {
+          const depthPx = nearDepthPx + depthNorm * depthSpanPx;
+          const lateralLimit = Math.tan(BMODE_SECTOR_HALF_ANGLE_RAD) * depthPx;
+          const dx = px - centerX;
+
+          if (Math.abs(dx) <= lateralLimit && lateralLimit > 1e-6) {
+            const theta = (dx / lateralLimit) * BMODE_SECTOR_HALF_ANGLE_RAD;
+            const scanNorm = (theta + BMODE_SECTOR_HALF_ANGLE_RAD) / (2 * BMODE_SECTOR_HALF_ANGLE_RAD);
+            const sourceX = Math.max(0, Math.min(sourceWidth - 1, Math.round(scanNorm * (sourceWidth - 1))));
+            const sourceY = Math.max(0, Math.min(sourceHeight - 1, Math.round(depthNorm * (sourceHeight - 1))));
+            const sourceIdx = (sourceY * sourceWidth + sourceX) * 4;
+
+            const raw = buffer[sourceIdx] ?? 0;
+            const edgeTaper = Math.pow(Math.max(0, 1 - Math.abs(dx) / Math.max(lateralLimit, 1)), 0.8);
+            const depthGain = 0.55 + 0.9 * depthNorm;
+
+            intensity = raw * edgeTaper * depthGain;
+          }
+        }
+
+        const clamped = Math.max(0, Math.min(255, Math.round(intensity)));
+        const visible = clamped < 30 ? 0 : clamped;
+        image.data[pixelIdx] = Math.round(visible * 0.92);
+        image.data[pixelIdx + 1] = Math.round(visible * 0.96);
+        image.data[pixelIdx + 2] = visible;
+        image.data[pixelIdx + 3] = 255;
       }
     }
 
-    ctx.putImageData(imageData, 0, 0);
-  }, [us]);
+    ctx.putImageData(image, 0, 0);
 
-  const probeData = useMemo(
-    () => {
-      const pose = computeProbePose(probeParamRad);
-      const baseAngleDeg = pose
-        ? (Math.atan2(pose.inwardY, pose.inwardX) * 180) / Math.PI
-        : -90;
+    ctx.save();
+    ctx.strokeStyle = "hsla(192, 85%, 65%, 0.16)";
+    ctx.lineWidth = 1;
+    for (let i = 1; i <= 6; i += 1) {
+      const y = apexY + nearDepthPx + (i / 6) * depthSpanPx;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(displayWidth, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
 
-      return Array.from({ length: 361 }, (_, i) => {
-        const angle = i - 180;
-        const targetAngle = baseAngleDeg + (params.steeringAngleDeg ?? 0);
-        const steerDiff = Math.abs(angle - targetAngle);
-        const gain = Math.exp(-(steerDiff * steerDiff) / (2 * 15 * 15));
-        return { angle, gain: parseFloat(gain.toFixed(4)) };
-      });
-    },
-    [params.steeringAngleDeg, probeParamRad, phantomRegions]
-  );
+  const getAmplitudePercentile = (buffer: Float32Array, percentile: number) => {
+    const values: number[] = [];
+    for (let i = 0; i < buffer.length; i += 1) {
+      const value = buffer[i];
+      if (value > 0) {
+        values.push(value);
+      }
+    }
+
+    if (!values.length) return 0;
+    values.sort((a, b) => a - b);
+
+    const p = Math.max(0, Math.min(100, percentile));
+    const idx = Math.min(values.length - 1, Math.max(0, Math.floor((p / 100) * (values.length - 1))));
+    return values[idx];
+  };
+
+  const toLogCompressedPixel = (amplitude: number, maxAmplitude: number) => {
+    if (amplitude <= 0 || maxAmplitude <= 0) return 0;
+    const normalized = Math.max(0, Math.min(1, amplitude / maxAmplitude));
+    const gammaCorrected = Math.pow(normalized, 0.35);
+    return Math.max(0, Math.min(255, Math.round(255 * gammaCorrected)));
+  };
+
+  const renormalizeBmodeImage = () => {
+    const buffer = bmodeBufferRef.current;
+    const amplitudeBuffer = bmodeAmplitudeBufferRef.current;
+    if (!buffer || !amplitudeBuffer) return;
+
+    const filteredAmplitudeValues = Array.from(amplitudeBuffer).filter((value) => value >= 0.001);
+    const normalizationCeiling = filteredAmplitudeValues.length
+      ? getAmplitudePercentile(new Float32Array(filteredAmplitudeValues), 99.5)
+      : 0;
+
+    for (let i = 0; i < amplitudeBuffer.length; i += 1) {
+      const amplitude = Math.max(0, Math.min(amplitudeBuffer[i], normalizationCeiling));
+      const normalized = normalizationCeiling > 0
+        ? Math.max(0, Math.min(1, Math.log1p(amplitude) / Math.log1p(normalizationCeiling)))
+        : 0;
+      const gammaCorrected = Math.pow(normalized, 0.4);
+      const mappedPixel = Math.max(0, Math.min(255, Math.round(255 * gammaCorrected)));
+      const pixel = mappedPixel < 30 ? 0 : mappedPixel;
+      const idx = i * 4;
+      buffer[idx] = pixel;
+      buffer[idx + 1] = pixel;
+      buffer[idx + 2] = pixel;
+      buffer[idx + 3] = 255;
+    }
+
+    redrawBmodeBuffer();
+  };
+
+  const clearBmodeBuffer = (width = bmodeWidthRef.current, height = bmodeHeightRef.current) => {
+    bmodeWidthRef.current = Math.max(1, Math.floor(width));
+    bmodeHeightRef.current = Math.max(1, Math.floor(height));
+
+    const pixelCount = bmodeWidthRef.current * bmodeHeightRef.current;
+    bmodeBufferRef.current = new Uint8ClampedArray(pixelCount * 4);
+    bmodeAmplitudeBufferRef.current = new Float32Array(pixelCount);
+    bmodeGlobalMaxAmplitudeRef.current = 0;
+    const buffer = bmodeBufferRef.current;
+    for (let i = 0; i < buffer.length; i += 4) {
+      buffer[i] = 0;
+      buffer[i + 1] = 0;
+      buffer[i + 2] = 0;
+      buffer[i + 3] = 255;
+    }
+    redrawBmodeBuffer();
+  };
+
+  const drawBmodeColumnAtScanIndex = (
+    scanIndex: number,
+    totalScanPositions: number,
+    amplitudes: number[],
+    drawImmediate = true,
+  ) => {
+    const buffer = bmodeBufferRef.current;
+    const amplitudeBuffer = bmodeAmplitudeBufferRef.current;
+    if (!buffer || !amplitudeBuffer || !amplitudes.length) return;
+
+    const width = bmodeWidthRef.current;
+    const height = bmodeHeightRef.current;
+    const mappedX = totalScanPositions <= 1
+      ? 0
+      : Math.round((scanIndex / (totalScanPositions - 1)) * (width - 1));
+    const x = Math.max(0, Math.min(width - 1, mappedX));
+
+    for (let sampleIdx = 0; sampleIdx < amplitudes.length; sampleIdx += 1) {
+      const y = amplitudes.length <= 1
+        ? 0
+        : Math.round((sampleIdx / (amplitudes.length - 1)) * (height - 1));
+      const amplitude = Math.max(0, amplitudes[sampleIdx] ?? 0);
+      const ampIdx = y * width + x;
+
+      if (amplitude > amplitudeBuffer[ampIdx]) {
+        amplitudeBuffer[ampIdx] = amplitude;
+        if (amplitude > bmodeGlobalMaxAmplitudeRef.current) {
+          bmodeGlobalMaxAmplitudeRef.current = amplitude;
+        }
+
+        if (drawImmediate) {
+          const idx = ampIdx * 4;
+          const pixel = toLogCompressedPixel(amplitude, bmodeGlobalMaxAmplitudeRef.current);
+          buffer[idx] = pixel;
+          buffer[idx + 1] = pixel;
+          buffer[idx + 2] = pixel;
+          buffer[idx + 3] = 255;
+        }
+      }
+    }
+
+    if (drawImmediate) {
+      redrawBmodeBuffer();
+    }
+  };
+
+  useEffect(() => {
+    if (!bmodeBufferRef.current) {
+      clearBmodeBuffer();
+      return;
+    }
+    redrawBmodeBuffer();
+  }, []);
+
+  useEffect(() => {
+    if (!us?.amplitudes?.length) return;
+    if (autoScanActive) return;
+    if (!bmodeBufferRef.current || !bmodeAmplitudeBufferRef.current) {
+      clearBmodeBuffer();
+    }
+
+    const width = bmodeWidthRef.current;
+    const probeCycle = ((latestColumnProbeParamRad % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    const scanIndex = width <= 1 ? 0 : Math.round((probeCycle / (Math.PI * 2)) * (width - 1));
+    drawBmodeColumnAtScanIndex(scanIndex, width, us.amplitudes);
+  }, [autoScanActive, latestColumnProbeParamRad, us?.amplitudes]);
+
+  useEffect(() => {
+    if (!autoScanActive) return;
+
+    let cancelled = false;
+
+    const runSweep = async () => {
+      const scanParams = autoScanParamsRef.current ?? params;
+      const scanParamsKey = JSON.stringify(scanParams);
+      const totalScanPositions = TOTAL_SCAN_POSITIONS;
+      const scanHeight = Math.max(scanParams.numSamples, 1);
+      const sweepSpan = Math.max(0, Math.PI * 2 - AUTO_SCAN_STEP_RAD);
+      let lastSweepParam = autoScanStartParamRef.current;
+
+      clearBmodeBuffer(totalScanPositions, scanHeight);
+
+      for (let scanIndex = 0; scanIndex < totalScanPositions; scanIndex += 1) {
+        if (cancelled) return;
+
+        const t = totalScanPositions <= 1 ? 0 : scanIndex / (totalScanPositions - 1);
+        const sweepParam = autoScanStartParamRef.current + t * sweepSpan;
+        lastSweepParam = sweepParam;
+        setProbeParamRad(sweepParam);
+        setAutoScanProgress(t);
+
+        const simulationParams = {
+          ...scanParams,
+          frequency: 5e6 / Math.max(scanParams.wavelength, 0.1),
+          enableNoise: scanParams.noiseEnabled ?? scanParams.enableNoise ?? true,
+          probeParamRad: sweepParam,
+        };
+
+        const res = await simulate(simulationParams, false);
+        if (cancelled) return;
+
+        if (res?.success) {
+          setResult(res);
+          setLatestColumnProbeParamRad(sweepParam);
+          drawBmodeColumnAtScanIndex(scanIndex, totalScanPositions, res.data.bmode.amplitudes || [], false);
+        }
+      }
+
+      if (cancelled) return;
+      renormalizeBmodeImage();
+      setProbeParamRad(lastSweepParam);
+      setLatestColumnProbeParamRad(lastSweepParam);
+      preserveAutoScanResultRef.current = {
+        paramsKey: scanParamsKey,
+        probeParamRad: lastSweepParam,
+      };
+      setAutoScanProgress(1);
+      setAutoScanActive(false);
+    };
+
+    runSweep();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [autoScanActive, simulate]);
+
+  useEffect(() => {
+    const canvas = beamFieldRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const size = BEAM_FIELD_SIZE;
+    canvas.width = size;
+    canvas.height = size;
+
+    const numElements = Math.max(1, Math.floor(params.numElements));
+    const steeringRad = ((params.steeringAngleDeg ?? 0) * Math.PI) / 180;
+    const dLambda = params.spacing;
+    const phaseScale = 2 * Math.PI;
+    const xSpan = numElements * dLambda * 1.5;
+    const ySpan = numElements * dLambda * 5;
+
+    const weights = getBeamFieldWindowWeights(params.windowType, numElements);
+    const elementHorizontalX = Array.from({ length: numElements }, (_, n) => (n - (numElements - 1) / 2) * dLambda);
+    const elementVerticalY = new Array(numElements).fill(0);
+    const phaseN = Array.from({ length: numElements }, (_, n) => {
+      const xN = elementHorizontalX[n];
+      return phaseScale * xN * Math.sin(steeringRad);
+    });
+
+    const field = new Float32Array(size * size);
+    let maxAbsField = 0;
+
+    const denom = Math.max(1, size - 1);
+
+    for (let py = 0; py < size; py += 1) {
+      const v = (py / denom) * ySpan;
+      for (let px = 0; px < size; px += 1) {
+        const u = (px / denom - 0.5) * xSpan;
+        let realSum = 0;
+
+        for (let n = 0; n < numElements; n += 1) {
+          const rN = Math.sqrt((u - elementHorizontalX[n]) ** 2 + (v - elementVerticalY[n]) ** 2);
+          const phase = phaseScale * rN - phaseN[n];
+          realSum += weights[n] * Math.cos(phase);
+        }
+
+        const idx = py * size + px;
+        field[idx] = realSum;
+        const absSum = Math.abs(realSum);
+        if (absSum > maxAbsField) maxAbsField = absSum;
+      }
+    }
+
+    const norm = maxAbsField > 0 ? maxAbsField : 1;
+    const image = ctx.createImageData(size, size);
+
+    for (let i = 0; i < field.length; i += 1) {
+      const signedVal = Math.max(-1, Math.min(1, field[i] / norm));
+      const compressed = Math.tanh(1.8 * signedVal);
+      const p = i * 4;
+
+      if (compressed >= 0) {
+        const c = compressed;
+        image.data[p] = Math.round(14 + 20 * c);
+        image.data[p + 1] = Math.round(72 + 178 * c);
+        image.data[p + 2] = Math.round(95 + 160 * c);
+      } else {
+        const c = -compressed;
+        image.data[p] = Math.round(70 + 170 * c);
+        image.data[p + 1] = Math.round(16 + 36 * c);
+        image.data[p + 2] = Math.round(28 + 58 * c);
+      }
+
+      image.data[p + 3] = 255;
+    }
+
+    ctx.putImageData(image, 0, 0);
+
+    const cx = size / 2;
+    const cy = 0;
+    const lineLen = size * 0.9;
+    const endX = cx + lineLen * Math.sin(steeringRad);
+    const endY = cy + lineLen * Math.cos(steeringRad);
+
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = "rgb(255, 235, 59)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(endX, endY);
+    ctx.stroke();
+    ctx.restore();
+  }, [
+    params.numElements,
+    params.spacing,
+    params.steeringAngleDeg,
+    params.windowType,
+  ]);
+
+  const handleAutoScanClick = () => {
+    if (autoScanActive) {
+      setAutoScanActive(false);
+      return;
+    }
+
+    const startInput = lastIdleInputRef.current ?? {
+      params: debouncedParams,
+      probeParamRad: debouncedProbeParamRad,
+    };
+
+    autoScanParamsRef.current = { ...startInput.params };
+    clearBmodeBuffer(TOTAL_SCAN_POSITIONS, Math.max(startInput.params.numSamples, 1));
+    setAutoScanProgress(0);
+    autoScanStartParamRef.current = startInput.probeParamRad;
+    setProbeParamRad(startInput.probeParamRad);
+    setLatestColumnProbeParamRad(startInput.probeParamRad);
+    setAutoScanActive(true);
+  };
+
+  const maxExpectedFd = (2 * (bloodVelocityCms / 100) * (5e6 / Math.max(params.wavelength, 0.1))) / 1540;
+  const fdMagnitudeNorm = Math.min(Math.abs(dopplerState.fdHz) / Math.max(maxExpectedFd, 1), 1);
 
   if (error && isInitialLoadRef.current) {
     return (
@@ -608,8 +1159,8 @@ export default function SimulatorUltrasound() {
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Phantom View (Modified Shepp-Logan)</h3>
           <div className="flex-1 min-h-0 flex items-center justify-center relative">
-            <canvas ref={phantomRef} className={`ultrasound-canvas rounded-lg max-w-full max-h-full ${isInitialLoadRef.current ? "loading" : "ready"} ${isDraggingProbe ? "cursor-grabbing" : "cursor-grab"}`} />
-            <div className="ultrasound-phantom-hint">Drag probe along phantom boundary. Hover region to inspect, click to edit.</div>
+            <canvas ref={phantomRef} className={`ultrasound-canvas rounded-lg max-w-full max-h-full ${isInitialLoadRef.current ? "loading" : "ready"} ${(isDraggingProbe || isDraggingVessel) ? "cursor-grabbing" : "cursor-grab"}`} />
+            <div className="ultrasound-phantom-hint">Drag probe on boundary and drag vessel inside phantom. Hover region to inspect, click to edit.</div>
 
             {isInitialLoadRef.current && (
               <div className="absolute text-center">
@@ -821,8 +1372,22 @@ export default function SimulatorUltrasound() {
         </div>
 
         <div className="glass-panel p-3 flex flex-col">
-          <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">B-Mode Image</h3>
-          <div className="flex-1 min-h-0 flex items-center justify-center relative">
+          <div className="flex items-center justify-between mb-2 gap-2">
+            <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground">B-Mode Image</h3>
+            <button
+              type="button"
+              onClick={handleAutoScanClick}
+              className={`ultrasound-scan-btn ${autoScanActive ? "active" : ""}`}
+            >
+              {autoScanActive ? "Stop Scan" : "Auto Scan"}
+            </button>
+          </div>
+
+          <div className="ultrasound-scan-progress">
+            <div className="ultrasound-scan-progress-fill" style={{ width: `${Math.round(autoScanProgress * 100)}%` }} />
+          </div>
+
+          <div className="h-[230px] w-full flex items-center justify-center relative mt-2">
             <canvas ref={bmodeRef} className={`bmode-canvas ultrasound-canvas rounded-lg max-w-full max-h-full ${isInitialLoadRef.current ? "loading" : "ready"}`} />
             {isInitialLoadRef.current && (
               <div className="absolute text-center">
@@ -831,74 +1396,64 @@ export default function SimulatorUltrasound() {
               </div>
             )}
           </div>
+
+          <div className="ultrasound-doppler-section mt-2">
+            <h4 className="ultrasound-doppler-title">Doppler Mode</h4>
+            <p className="ultrasound-doppler-help">Drag the vessel in Phantom View. Frequency shift uses beam-vessel intersection.</p>
+
+            <div className="ultrasound-doppler-control">
+              <div className="flex items-center justify-between">
+                <Label className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Blood Velocity</Label>
+                <span className="text-[11px] font-mono text-foreground">{bloodVelocityCms.toFixed(1)} cm/s</span>
+              </div>
+              <Slider
+                value={[bloodVelocityCms]}
+                min={0}
+                max={120}
+                step={0.5}
+                onValueChange={([v]) => setBloodVelocityCms(v)}
+              />
+            </div>
+
+            <div className="ultrasound-doppler-control">
+              <div className="flex items-center justify-between">
+                <Label className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Flow Angle</Label>
+                <span className="text-[11px] font-mono text-foreground">{flowAngleDeg.toFixed(0)}°</span>
+              </div>
+              <Slider
+                value={[flowAngleDeg]}
+                min={-180}
+                max={180}
+                step={1}
+                onValueChange={([v]) => setFlowAngleDeg(v)}
+              />
+            </div>
+
+            <div className="ultrasound-doppler-plot">
+              <div className="ultrasound-doppler-axis" />
+              <div
+                className={`ultrasound-doppler-bar ${dopplerState.fdHz >= 0 ? "pos" : "neg"}`}
+                style={{ width: `${Math.round(fdMagnitudeNorm * 50)}%` }}
+              />
+            </div>
+
+            <div className="ultrasound-doppler-readout">
+              <span>{dopplerState.intersects ? "Beam intersects vessel" : "No vessel intersection"}</span>
+              <span>fd: {dopplerState.fdHz.toFixed(1)} Hz</span>
+            </div>
+          </div>
         </div>
 
         <div className="glass-panel p-3 flex flex-col">
-          <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Probe Direction</h3>
-          <div className="flex-1 min-h-0 relative">
-            {isInitialLoadRef.current && (
-              <div className="absolute inset-0 flex items-center justify-center z-10 rounded ultrasound-loading-overlay">
-                <div className="text-center">
-                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2"></div>
-                  <p className="text-xs text-muted-foreground">Loading...</p>
-                </div>
-              </div>
-            )}
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={probeData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
-                <defs>
-                  <linearGradient id="probeGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="hsl(290,60%,50%)" stopOpacity={0.4} />
-                    <stop offset="100%" stopColor="hsl(290,60%,50%)" stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
-                <XAxis
-                  dataKey="angle"
-                  tick={{ fontSize: 9 }}
-                  label={{
-                    value: "Angle (°)",
-                    position: "bottom",
-                    offset: 5,
-                    style: {
-                      fill: "hsl(240,8%,55%)",
-                      fontSize: 10,
-                      fontFamily: "JetBrains Mono",
-                    },
-                  }}
-                />
-                <YAxis
-                  tick={{ fontSize: 9 }}
-                  label={{
-                    value: "Gain",
-                    angle: -90,
-                    position: "insideLeft",
-                    style: {
-                      fill: "hsl(240,8%,55%)",
-                      fontSize: 10,
-                      fontFamily: "JetBrains Mono",
-                    },
-                  }}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "hsl(240,10%,15%)",
-                    border: "1px solid hsl(240,10%,22%)",
-                    borderRadius: 8,
-                    fontFamily: "JetBrains Mono",
-                    fontSize: 11,
-                  }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="gain"
-                  stroke="hsl(290,60%,50%)"
-                  fill="url(#probeGrad)"
-                  strokeWidth={1.5}
-                  dot={false}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+          <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Beam Field</h3>
+          <div className="flex-1 min-h-0 flex items-center justify-center">
+            <canvas
+              ref={beamFieldRef}
+              width={BEAM_FIELD_SIZE}
+              height={BEAM_FIELD_SIZE}
+              className="rounded-lg"
+              style={{ width: BEAM_FIELD_SIZE, height: BEAM_FIELD_SIZE }}
+            />
           </div>
         </div>
       </div>

@@ -278,6 +278,7 @@ class UltrasoundParamsSchema(BaseModel):
     spacing: float = Field(default=0.3, gt=0, description="Element spacing in wavelengths")
     frequency: float = Field(default=5e6, gt=0, description="Ultrasound frequency in Hz")
     snr_db: float = Field(default=25, ge=-100, le=200, description="SNR in dB")
+    window_type: WindowType = Field(default="rectangular", description="Apodization window type")
     steering_angle_deg: float = Field(default=0, ge=-90, le=90, description="Beam steering angle in degrees")
     max_depth_mm: float = Field(default=100, gt=0, description="Maximum imaging depth in mm")
     num_samples: int = Field(default=512, ge=128, le=2048, description="Depth sample points")
@@ -301,6 +302,7 @@ class UltrasoundParamsSchema(BaseModel):
                 "spacing": 0.3,
                 "frequency": 5e6,
                 "snr_db": 25,
+                "window_type": "rectangular",
                 "steering_angle_deg": 0,
                 "max_depth_mm": 100,
                 "num_samples": 512,

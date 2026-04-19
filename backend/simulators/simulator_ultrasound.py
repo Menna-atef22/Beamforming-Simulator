@@ -1,6 +1,9 @@
 """Ultrasound imaging simulator with B-mode and Doppler - OOP implementation"""
 
 import math
+import random
+import zlib
+import logging
 from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 
@@ -9,6 +12,9 @@ from ..core.array_model import ArrayModel
 from ..core.signal_model import SignalModel
 from ..core.noise_model import NoiseModel
 from ..core.window_functions import WindowFunction
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -179,12 +185,12 @@ class SimulatorUltrasound(BeamformingEngine):
                 "x0": 0.0000,
                 "y0": 0.0000,
                 "phi_deg": 0.0,
-                "acoustic_impedance_mrayl": 1.63,
-                "attenuation_db_cm_mhz": 0.50,
-                "backscatter_coeff": 0.28,
+                "acoustic_impedance_mrayl": 1.54,
+                "attenuation_db_cm_mhz": 0.42,
+                "backscatter_coeff": 0.14,
                 "speed_of_sound_mps": 1540.0,
-                "scatter_density": 0.55,
-                "boundary_roughness": 0.35,
+                "scatter_density": 0.30,
+                "boundary_roughness": 0.22,
             },
             {
                 "region_id": 2,
@@ -676,7 +682,12 @@ class SimulatorUltrasound(BeamformingEngine):
             probe_param_rad=probe_param_rad,
             steering_angle_deg=steering_angle_deg,
         )
-        ray_length_norm = 1.8
+        ray_length_norm = 2.5
+        element_positions = self.array.get_element_positions()
+        window_weights = self.window.get_weights()
+        if len(window_weights) != len(element_positions):
+            window_weights = [1.0] * len(element_positions)
+        total_window_weight = max(sum(window_weights), 1e-9)
         
         # Generate depth axis
         depths_mm = [max_depth_mm * i / (num_samples - 1) for i in range(num_samples)]
@@ -688,7 +699,25 @@ class SimulatorUltrasound(BeamformingEngine):
         cumulative_atten_db = 0.0
         prev_depth_mm = 0.0
 
+        # Coupling gel / water-like entry medium to avoid an overly bright skin boundary.
         base_medium_impedance_mrayl = 1.48
+        impedance_values = [base_medium_impedance_mrayl]
+        impedance_values.extend(
+            float(region.get("acoustic_impedance_mrayl", base_medium_impedance_mrayl))
+            for region in self.phantom_ellipses
+        )
+        impedance_range = max(max(impedance_values) - min(impedance_values), 1e-6)
+        snr_linear = 10 ** (self.noise.snr_db / 20.0)
+        noise_sigma = 0.00005 / max(snr_linear, 1e-6)
+        noise_seed_source = (
+            f"{probe_param_rad:.12f}|{steering_angle_deg:.6f}|{self.noise.snr_db:.6f}|"
+            f"{self.signal.frequency:.3f}|{self.window.window_type}|{max_depth_mm:.6f}|{num_samples}"
+        )
+        noise_rng = random.Random(zlib.crc32(noise_seed_source.encode("ascii")))
+        depth_step_mm = max_depth_mm / max(num_samples - 1, 1)
+        min_transition_spacing_mm = max(depth_step_mm, 0.2)
+        last_transition_depth_mm = -1e9
+        near_field_span_mm = max(8.0, min(20.0, 0.12 * max_depth_mm))
         
         # Compute B-mode image line
         for depth in depths_mm:
@@ -711,82 +740,81 @@ class SimulatorUltrasound(BeamformingEngine):
             step_cm = max(0.0, (depth - prev_depth_mm) / 10.0)
             cumulative_atten_db += current_attenuation * frequency_mhz * step_cm * 2.0
 
-            # Base signal from tissue reflections and phantom region properties
+            # Boundary-only reflection model:
+            # emit spikes only when ray crosses a region boundary.
             signal = 0.0
+            prev_region_id = int(prev_region.get("region_id", -1)) if prev_region else -1
+            current_region_id = int(region.get("region_id", -1)) if region else -1
 
-            # Layer boundary reflections (legacy tissue model)
-            reflection_legacy = self._compute_reflection(depth, steering_angle_deg)
-            signal += reflection_legacy * 0.25
+            if current_region_id != prev_region_id and (depth - last_transition_depth_mm) >= min_transition_spacing_mm:
+                prev_impedance = (
+                    float(prev_region.get("acoustic_impedance_mrayl", base_medium_impedance_mrayl))
+                    if prev_region
+                    else base_medium_impedance_mrayl
+                )
+                impedance_diff = abs(current_impedance - prev_impedance)
+                reflection_coeff = impedance_diff / max(current_impedance + prev_impedance, 1e-9)
 
-            # Region boundary reflection from impedance mismatch
-            if prev_region is not None and (
-                region is None
-                or int(prev_region.get("region_id", -1)) != int(region.get("region_id", -1))
-            ):
-                prev_impedance = float(prev_region.get("acoustic_impedance_mrayl", base_medium_impedance_mrayl))
-                z1 = prev_impedance * 1e6
-                z2 = current_impedance * 1e6
-                reflection_amp = abs((z2 - z1) / max(z2 + z1, 1e-9))
-
-                rough_prev = float(prev_region.get("boundary_roughness", 0.3))
-                rough_cur = float(region.get("boundary_roughness", rough_prev)) if region else rough_prev
-                rough_factor = 0.6 + 0.4 * ((rough_prev + rough_cur) / 2.0)
-
-                boundary_echo = reflection_amp * rough_factor
-                signal += boundary_echo
+                boundary_echo = reflection_coeff
+                signal = boundary_echo
                 reflections.append({"depth_mm": depth, "amplitude": boundary_echo})
+                last_transition_depth_mm = depth
 
-            # Intra-region backscatter contribution (A-mode realism)
-            if region:
-                backscatter = float(region.get("backscatter_coeff", 0.25))
-                density = float(region.get("scatter_density", 0.5))
-                region_id = int(region.get("region_id", 0))
-                deterministic_texture = 0.5 + 0.5 * math.sin(depth * 0.29 + region_id * 1.91)
-                signal += backscatter * density * deterministic_texture
+            # Keep tissue interiors mostly dark with subtle gray texture.
+            interior_echo = 0.0
+            signal += interior_echo
             
             # Apply steering-dependent weighting (beam pattern effect)
             # Steering angle focuses beam at certain angles, reducing signal at grazing angles
             steer_efficiency = math.cos(steer_rad) ** 2
             signal *= steer_efficiency
             
-            # Scatterer contributions (speckle)
-            if enable_speckle:
-                for scatterer in self.scatterers:
-                    # Apply steering angle to scatterer position
-                    lateral_pos = scatterer.lateral_mm
-                    axial_pos = scatterer.depth_mm
-                    
-                    # Transform lateral position based on beam steering
-                    effective_lateral = lateral_pos - depth * math.tan(steer_rad)
-                    
-                    distance = math.sqrt(effective_lateral ** 2 + (depth - axial_pos) ** 2)
-                    
-                    # Point spread function (PSF) of beam - depends on beam width
-                    # Narrower beam for higher frequencies, wider for lower
-                    beam_width = 2.0 * (self.signal.frequency / 5e6) ** -0.5
-                    psf = math.exp(-(distance ** 2) / (2 * (beam_width ** 2)))
-                    signal += scatterer.scattering_amplitude * psf
-            
             # Apply attenuation with depth
             attenuation_layer = self._compute_attenuation(depth)
             attenuation_region = 10 ** (-cumulative_atten_db / 20.0)
             signal *= attenuation_layer * attenuation_region
+
+            # Suppress very shallow amplitudes so early echoes do not dominate B-mode dynamic range.
+            near_field_ramp = min(1.0, max(0.0, depth / near_field_span_mm))
+            signal *= near_field_ramp ** 1.35
+
+            # Mild depth gain compensation to avoid excessive near-field dominance.
+            tgc_db = min(depth * frequency_mhz * 0.12, self.dynamic_range_db * 0.35)
+            signal *= 10 ** (tgc_db / 20.0)
             
             # Apply focusing gain
             focus_gain = self._compute_focus_gain(depth)
             signal *= (0.5 + 0.5 * focus_gain)
+
+            # Compute A-mode ray from a coherent sum of element contributions,
+            # weighted by the selected apodization window.
+            depth_m = max(depth * 1e-3, 1e-6)
+            focus_x = depth_m * math.sin(steer_rad)
+            focus_y = depth_m * math.cos(steer_rad)
+            real_sum = 0.0
+            imag_sum = 0.0
+
+            for n, (elem_x, _) in enumerate(element_positions):
+                r_n = math.sqrt((focus_x - elem_x) ** 2 + focus_y ** 2)
+                if r_n < 1e-9:
+                    continue
+
+                # Steering delay phase for element n: -k*x_n*sin(theta_steer)
+                phase_shift_n = -self.array.wave_number * elem_x * math.sin(steer_rad)
+                phase = self.array.wave_number * r_n + phase_shift_n
+                real_sum += window_weights[n] * math.cos(phase)
+                imag_sum += window_weights[n] * math.sin(phase)
+
+            coherent_gain = math.sqrt(real_sum ** 2 + imag_sum ** 2) / total_window_weight
+            beamforming_gain = 0.35 + 0.65 * coherent_gain
+            signal *= beamforming_gain
             
-            # Apply SNR effect (controls signal vs noise ratio)
-            snr_factor = 10 ** (self.noise.snr_db / 20.0)
-            signal *= (snr_factor / (snr_factor + 1))
+            # Keep non-boundary samples strictly zero; only boundary echoes may carry noise.
+            if enable_noise and signal > 0.0:
+                signal += noise_rng.gauss(0.0, noise_sigma)
             
             # Limit signal to physical range
             signal = max(0, min(signal, 1.0))
-            
-            # Add noise if enabled
-            if enable_noise:
-                noise_power = self.noise.get_noise_power() / self.signal.amplitude
-                signal = max(0, signal + noise_power * 0.1)
             
             amplitudes.append(signal)
             
@@ -796,6 +824,19 @@ class SimulatorUltrasound(BeamformingEngine):
 
             prev_depth_mm = depth
             prev_region = region
+
+        reflection_details = [
+            {
+                "depth_mm": round(float(reflection.get("depth_mm", 0.0)), 4),
+                "amplitude": round(float(reflection.get("amplitude", 0.0)), 6),
+            }
+            for reflection in reflections
+        ]
+        logger.info(
+            "[run_bmode] reflections_detected=%d details=%s",
+            len(reflections),
+            reflection_details,
+        )
         
         # Normalize B-mode display
         max_db = max(amplitudes_db)

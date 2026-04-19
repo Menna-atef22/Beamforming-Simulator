@@ -1,5 +1,8 @@
 .bmode-canvas {
   image-rendering: pixelated;
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .ultrasound-canvas.loading {
@@ -114,4 +117,106 @@
   border-color: hsla(28, 95%, 62%, 0.7);
   background: hsla(28, 88%, 42%, 0.95);
   color: hsl(30, 100%, 95%);
+}
+
+.ultrasound-scan-btn {
+  border: 1px solid hsla(210, 26%, 54%, 0.45);
+  background: hsla(220, 16%, 18%, 0.9);
+  color: hsla(210, 32%, 90%, 0.96);
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: "JetBrains Mono", monospace;
+  letter-spacing: 0.02em;
+}
+
+.ultrasound-scan-btn.active {
+  border-color: hsla(12, 88%, 60%, 0.7);
+  background: hsla(8, 86%, 45%, 0.95);
+  color: hsl(0, 0%, 98%);
+}
+
+.ultrasound-scan-progress {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: hsla(220, 15%, 18%, 0.8);
+  overflow: hidden;
+}
+
+.ultrasound-scan-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, hsla(188, 86%, 56%, 0.95), hsla(266, 85%, 62%, 0.95));
+}
+
+.ultrasound-doppler-section {
+  border-top: 1px solid hsla(220, 20%, 36%, 0.25);
+  padding-top: 8px;
+}
+
+.ultrasound-doppler-title {
+  margin: 0;
+  color: hsla(194, 88%, 70%, 0.98);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ultrasound-doppler-help {
+  margin: 3px 0 7px;
+  font-size: 10px;
+  color: hsla(210, 20%, 76%, 0.82);
+}
+
+.ultrasound-doppler-control {
+  margin-bottom: 7px;
+}
+
+.ultrasound-doppler-plot {
+  position: relative;
+  margin-top: 8px;
+  height: 18px;
+  border-radius: 5px;
+  background: hsla(220, 14%, 14%, 0.95);
+  border: 1px solid hsla(220, 16%, 34%, 0.35);
+  overflow: hidden;
+}
+
+.ultrasound-doppler-axis {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: hsla(210, 16%, 76%, 0.45);
+}
+
+.ultrasound-doppler-bar {
+  position: absolute;
+  top: 3px;
+  height: calc(100% - 6px);
+  border-radius: 4px;
+}
+
+.ultrasound-doppler-bar.pos {
+  left: 50%;
+  background: hsla(4, 88%, 58%, 0.95);
+}
+
+.ultrasound-doppler-bar.neg {
+  right: 50%;
+  background: hsla(214, 88%, 58%, 0.95);
+}
+
+.ultrasound-doppler-readout {
+  margin-top: 6px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  color: hsla(210, 24%, 85%, 0.9);
+  font-family: "JetBrains Mono", monospace;
 }
