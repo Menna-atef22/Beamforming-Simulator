@@ -212,6 +212,7 @@ export interface UltrasoundParams extends BeamformingParams {
   dynamicRangeDb?: number;
   focalDepthM?: number;
   tissueThicknessM?: number;
+  phantomRegions?: PhantomEllipse[];
 }
 
 /** Acoustic tissue layer properties */
@@ -241,12 +242,44 @@ export interface BmodeMetrics {
   dynamicRangeDb: number;
 }
 
+/** Single Shepp-Logan ellipse row */
+export interface PhantomEllipse {
+  regionId: number;
+  label: string;
+  intensity: number;
+  a: number;
+  b: number;
+  x0: number;
+  y0: number;
+  phiDeg: number;
+  acousticImpedanceMrayl: number;
+  attenuationDbCmMhz: number;
+  backscatterCoeff: number;
+  speedOfSoundMps: number;
+  scatterDensity: number;
+  boundaryRoughness: number;
+}
+
+export interface UltrasoundReflectionPoint {
+  depthMm: number;
+  amplitude: number;
+}
+
+/** Phantom definition for deterministic frontend rendering */
+export interface UltrasoundPhantom {
+  model: string;
+  domain: [number, number] | number[];
+  ellipses: PhantomEllipse[];
+}
+
 /** B-mode imaging result */
 export interface UltrasoundBModeResult {
   depthsMm: number[];
   amplitudes: number[];
   amplitudesDb: number[];
+  reflections?: UltrasoundReflectionPoint[];
   metrics: BmodeMetrics;
+  phantom?: UltrasoundPhantom;
 }
 
 /** Doppler velocity spectrum */

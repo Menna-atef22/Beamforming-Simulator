@@ -200,6 +200,7 @@ class SimulationService:
             enable_speckle = params_dict.get("enable_speckle", True)
             run_doppler = params_dict.get("run_doppler", False)
             target_depth_mm = params_dict.get("target_depth_mm", 50)
+            phantom_regions = params_dict.get("phantom_regions")
             
             simulator = SimulatorUltrasound(
                 num_elements=num_elements,
@@ -207,6 +208,9 @@ class SimulationService:
                 frequency=frequency,
                 snr_db=snr_db
             )
+
+            if isinstance(phantom_regions, list) and phantom_regions:
+                simulator.set_phantom_regions(phantom_regions)
             
             # Run B-mode imaging
             bmode_result = simulator.run_bmode(

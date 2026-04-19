@@ -1,0 +1,113 @@
+Task 4 – Beamforming Simulator for Multi-Domain
+Applications (Ultrasound, 5G, Radar)
+Beamforming and direction of arrival (DOA) are fundamental concepts in modern technolo-
+gies including wireless communications (e.g., 5G), radar systems, and biomedical imaging such
+as ultrasound. The core principles rely on phase shifts, time delays, and constructive/destructive
+interference to steer and shape beams in space.
+Description:Develop a comprehensive 2D web-based simulator that demonstrates beam-
+forming concepts across multiple application domains. The simulator should be modular and
+support at least three independent modes:Ultrasound Imaging,5G Communication, and
+Radar Detection. The user should be able to explore, visualize, and control beamforming
+behavior in real time.
+General Requirements (Applicable to All Modes)
+•The user should be able to:
+–Control the number of transmitters/receivers (probes/elements).
+–Adjust phase shifts and/or time delays for each element in real time.
+–Customize operating frequency/frequencies.
+–Modify the geometry of the array (linear, curved), with full control over curvature param-
+eters.
+•Each element (probe) should emit avisualized signal(e.g., dotted wave propagation) that
+reflects realistic spreading behavior.
+•The resulting beam (from constructive/destructive interference) should be visualized as a
+distinct, emphasized beam profile(e.g., thicker line or intensity map).
+•The simulator should providesynchronized viewersshowing:
+–Individual element contributions.
+–Combined interference pattern.
+–Final beam direction/profile.
+•The user should be able to steer the beam dynamically by modifying delays/shifts.
+•Support multiple phased array units operating simultaneously.
+•Provide parameter setting files for predefined scenarios that can be loaded, modified, and
+saved.
+Mode 1: Ultrasound Beamforming Simulator
+•Simulate an ultrasound probe consisting of multiple transducer elements.
+•The user should be able to:
+–Customize probe geometry (linear or curved array).
+–Control number and spacing of elements.
+1
+
+–Adjust firing timing (delays) and phase shifts for each element.
+•Each probe element should emit awavefront visualizationrepresenting ultrasound prop-
+agation.
+•The system should:
+–Show the formation of the final beam as the summation of all emitted signals.
+–Allow real-time steering and focusing of the beam by modifying firing delays.
+•The visualization should clearly distinguish between:
+–Individual element emissions.
+–The resulting focused beam.
+•Think of how to represent realistic propagation and attenuation behavior.
+Mode 2: 5G Beamforming and User Tracking Simulator
+•Develop an interactive 2D environment (game-like interface) where:
+–The user can place multiple 5G base stations (towers).
+–The user can add/remove multiple mobile users in the environment.
+•Each tower should:
+–Contain a customizable number of antenna elements.
+–Have a defined coverage range (visualized).
+•Users should be able to:
+–Select a mobile user and control its movement dynamically (e.g., via keyboard).
+•The system should:
+–Form and steer beams toward active users using beamforming principles.
+–Visually show:
+∗Individual antenna emissions.
+∗Final directed beam toward each user.
+•Multi-user handling:
+–If multiple users are within range:
+∗The antenna elements should bedistributed dynamicallyamong users.
+∗Each subset of elements forms an independent beam.
+•Connectivity logic:
+–A user connects to only one tower at a time.
+–If overlapping coverage exists:
+∗The user remains connected to the current tower until disconnection conditions are met.
+∗Then connection may switch to another tower.
+2
+
+•Think carefully about how to simulate:
+–Resource allocation (elements per user),
+–Connection management,
+–Real-time beam steering.
+Mode 3: Radar Beamforming Simulator
+•Simulate a radar system based on phased array beam steering.
+•The system should:
+–Display a circular detection area.
+–Continuously scan the environment using asteered beam(not a simple rotating line).
+•The beam movement should be achieved by:
+–Dynamically adjusting delays/phases of array elements (beamforming-based scanning).
+•The user should be able to:
+–Control scan speed and direction.
+–Adjust array parameters and observe their effect on detection.
+•Objects/targets should be placed in the environment, and the system should:
+–Detect targets when they fall within the beam.
+–Visually indicate detection events.
+•Compare traditional “rotating line radar visualization” with beamforming-based steering.
+Advanced Requirements
+•Do your research to:
+–Compare classical beamforming approaches with any AI-based beam steering or optimiza-
+tion methods (if applicable).
+–Discuss limitations and trade-offs between different configurations (array geometry, fre-
+quency, number of elements).
+•Provide at least three predefined scenarios across the different modes (e.g., medical imaging,
+urban 5G deployment, radar tracking).
+Code Practice
+1. Avoid code repetition. Use modular design and reusable components across the three modes.
+2. Apply Object-Oriented Programming (OOP) principles:
+•Encapsulate array elements, signals, and visualization logic.
+•Separate simulation logic from UI handling.
+3. The UI should be intuitive and responsive:
+3
+
+•All changes should reflect immediately without requiring manual refresh.
+4. You will be penalized for:
+•Bugs or crashes,
+•Poor performance in real-time interaction,
+•Unhandled edge cases,
+•Unused or redundant code.
+4

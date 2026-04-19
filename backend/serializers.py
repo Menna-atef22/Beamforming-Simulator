@@ -171,17 +171,33 @@ def serialize_ultrasound_result(result) -> Dict[str, Any]:
     """Serialize Ultrasound simulation result"""
     bmode = {}
     if hasattr(result, 'bmode'):
+        bmode_metrics = getattr(result.bmode, "metrics", {})
+        if not isinstance(bmode_metrics, dict):
+            bmode_metrics = {}
+
+        phantom_ellipses = getattr(result.bmode, "phantom_ellipses", [])
+        phantom_payload = None
+        if isinstance(phantom_ellipses, list) and phantom_ellipses:
+            phantom_payload = {
+                "model": getattr(result.bmode, "phantom_model", "modified_shepp_logan"),
+                "domain": getattr(result.bmode, "phantom_domain", [-1.0, 1.0]),
+                "ellipses": phantom_ellipses,
+            }
+
         bmode = {
             "depths_mm": getattr(result.bmode, "depths_mm", []),
             "amplitudes": getattr(result.bmode, "amplitudes", []),
             "amplitudes_db": getattr(result.bmode, "amplitudes_db", []),
+            "reflections": getattr(result.bmode, "reflections", []),
             "metrics": {
-                "contrast_db": getattr(result.bmode.metrics if hasattr(result.bmode, "metrics") else {}, "contrast_db", 0.0),
-                "speckle_snr_db": getattr(result.bmode.metrics if hasattr(result.bmode, "metrics") else {}, "speckle_snr_db", 0.0),
-                "penetration_depth_mm": getattr(result.bmode.metrics if hasattr(result.bmode, "metrics") else {}, "penetration_depth_mm", 0.0),
-                "focal_depth_mm": getattr(result.bmode.metrics if hasattr(result.bmode, "metrics") else {}, "focal_depth_mm", 0.0),
-                "dynamic_range_db": getattr(result.bmode.metrics if hasattr(result.bmode, "metrics") else {}, "dynamic_range_db", 0.0)
-            }
+                "contrast_db": float(bmode_metrics.get("contrast_db", 0.0)),
+                "speckle_snr_db": float(bmode_metrics.get("speckle_snr_db", 0.0)),
+                "penetration_depth_mm": float(bmode_metrics.get("penetration_depth_mm", 0.0)),
+                "focal_depth_mm": float(bmode_metrics.get("focal_depth_mm", 0.0)),
+                "dynamic_range_db": float(bmode_metrics.get("dynamic_range_db", 0.0)),
+                "reflection_count": float(bmode_metrics.get("reflection_count", 0.0)),
+            },
+            "phantom": phantom_payload,
         }
     
     doppler = {}

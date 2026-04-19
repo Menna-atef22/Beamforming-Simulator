@@ -1,7 +1,7 @@
 """Ultrasound imaging simulator with B-mode and Doppler - OOP implementation"""
 
 import math
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 
 from ..core.beamforming_engine import BeamformingEngine, BeamformingResult
@@ -58,6 +58,10 @@ class UltrasoundBModeResult:
         tissue_layers: Simulated tissue structure.
         scatterers: Point scatterers generating speckle.
         metrics: Image quality metrics (contrast, resolution).
+        reflections: Significant boundary echoes used in A-mode display.
+        phantom_model: Phantom model identifier.
+        phantom_domain: Coordinate domain used by phantom definition.
+        phantom_ellipses: Canonical phantom ellipse list.
     """
     depths_mm: List[float]
     amplitudes: List[float]
@@ -65,6 +69,10 @@ class UltrasoundBModeResult:
     tissue_layers: List[TissueLayer]
     scatterers: List[Scatterer]
     metrics: Dict
+    reflections: List[Dict[str, float]]
+    phantom_model: str
+    phantom_domain: List[float]
+    phantom_ellipses: List[Dict[str, Any]]
 
 
 @dataclass
@@ -143,10 +151,264 @@ class SimulatorUltrasound(BeamformingEngine):
         self.scatterers: List[Scatterer] = []
         self.dynamic_range_db: float = dynamic_range_db
         self.focal_depth_mm: float = focal_depth_mm
+        self.phantom_model: str = "modified_shepp_logan"
+        self.phantom_domain: List[float] = [-1.0, 1.0]
+        self.phantom_ellipses: List[Dict[str, Any]] = self._get_modified_shepp_logan_ellipses()
         
         # Initialize default tissue model
         self._setup_default_tissue()
         self._setup_default_scatterers()
+
+    @staticmethod
+    def _get_modified_shepp_logan_ellipses() -> List[Dict[str, Any]]:
+        """Return exact Modified Shepp-Logan (Toft/MATLAB default) ellipse table.
+
+        Each ellipse uses the canonical parameter tuple [A, a, b, x0, y0, phi]:
+        - A: additive intensity
+        - a, b: semiaxis lengths in normalized domain [-1, 1]
+        - x0, y0: center offsets
+        - phi: counterclockwise rotation angle in degrees
+        """
+        return [
+            {
+                "region_id": 1,
+                "label": "Background Soft Tissue",
+                "intensity": 1.0,
+                "a": 0.6900,
+                "b": 0.9200,
+                "x0": 0.0000,
+                "y0": 0.0000,
+                "phi_deg": 0.0,
+                "acoustic_impedance_mrayl": 1.63,
+                "attenuation_db_cm_mhz": 0.50,
+                "backscatter_coeff": 0.28,
+                "speed_of_sound_mps": 1540.0,
+                "scatter_density": 0.55,
+                "boundary_roughness": 0.35,
+            },
+            {
+                "region_id": 2,
+                "label": "CSF/Ventricle-like Region",
+                "intensity": -0.8,
+                "a": 0.6624,
+                "b": 0.8740,
+                "x0": 0.0000,
+                "y0": -0.0184,
+                "phi_deg": 0.0,
+                "acoustic_impedance_mrayl": 1.51,
+                "attenuation_db_cm_mhz": 0.02,
+                "backscatter_coeff": 0.06,
+                "speed_of_sound_mps": 1505.0,
+                "scatter_density": 0.10,
+                "boundary_roughness": 0.10,
+            },
+            {
+                "region_id": 3,
+                "label": "Dense Lesion A",
+                "intensity": -0.2,
+                "a": 0.1100,
+                "b": 0.3100,
+                "x0": 0.2200,
+                "y0": 0.0000,
+                "phi_deg": -18.0,
+                "acoustic_impedance_mrayl": 1.72,
+                "attenuation_db_cm_mhz": 0.85,
+                "backscatter_coeff": 0.44,
+                "speed_of_sound_mps": 1570.0,
+                "scatter_density": 0.62,
+                "boundary_roughness": 0.48,
+            },
+            {
+                "region_id": 4,
+                "label": "Dense Lesion B",
+                "intensity": -0.2,
+                "a": 0.1600,
+                "b": 0.4100,
+                "x0": -0.2200,
+                "y0": 0.0000,
+                "phi_deg": 18.0,
+                "acoustic_impedance_mrayl": 1.68,
+                "attenuation_db_cm_mhz": 0.78,
+                "backscatter_coeff": 0.40,
+                "speed_of_sound_mps": 1560.0,
+                "scatter_density": 0.58,
+                "boundary_roughness": 0.46,
+            },
+            {
+                "region_id": 5,
+                "label": "Parenchyma-like Region",
+                "intensity": 0.1,
+                "a": 0.2100,
+                "b": 0.2500,
+                "x0": 0.0000,
+                "y0": 0.3500,
+                "phi_deg": 0.0,
+                "acoustic_impedance_mrayl": 1.65,
+                "attenuation_db_cm_mhz": 0.60,
+                "backscatter_coeff": 0.32,
+                "speed_of_sound_mps": 1545.0,
+                "scatter_density": 0.50,
+                "boundary_roughness": 0.40,
+            },
+            {
+                "region_id": 6,
+                "label": "Calcification 1",
+                "intensity": 0.1,
+                "a": 0.0460,
+                "b": 0.0460,
+                "x0": 0.0000,
+                "y0": 0.1000,
+                "phi_deg": 0.0,
+                "acoustic_impedance_mrayl": 5.50,
+                "attenuation_db_cm_mhz": 6.00,
+                "backscatter_coeff": 0.85,
+                "speed_of_sound_mps": 3200.0,
+                "scatter_density": 0.25,
+                "boundary_roughness": 0.82,
+            },
+            {
+                "region_id": 7,
+                "label": "Calcification 2",
+                "intensity": 0.1,
+                "a": 0.0460,
+                "b": 0.0460,
+                "x0": 0.0000,
+                "y0": -0.1000,
+                "phi_deg": 0.0,
+                "acoustic_impedance_mrayl": 5.20,
+                "attenuation_db_cm_mhz": 5.40,
+                "backscatter_coeff": 0.80,
+                "speed_of_sound_mps": 3000.0,
+                "scatter_density": 0.22,
+                "boundary_roughness": 0.78,
+            },
+            {
+                "region_id": 8,
+                "label": "Cystic Node 1",
+                "intensity": 0.1,
+                "a": 0.0460,
+                "b": 0.0230,
+                "x0": -0.0800,
+                "y0": -0.6050,
+                "phi_deg": 0.0,
+                "acoustic_impedance_mrayl": 1.49,
+                "attenuation_db_cm_mhz": 0.04,
+                "backscatter_coeff": 0.04,
+                "speed_of_sound_mps": 1490.0,
+                "scatter_density": 0.08,
+                "boundary_roughness": 0.08,
+            },
+            {
+                "region_id": 9,
+                "label": "Cystic Node 2",
+                "intensity": 0.1,
+                "a": 0.0230,
+                "b": 0.0230,
+                "x0": 0.0000,
+                "y0": -0.6050,
+                "phi_deg": 0.0,
+                "acoustic_impedance_mrayl": 1.50,
+                "attenuation_db_cm_mhz": 0.05,
+                "backscatter_coeff": 0.05,
+                "speed_of_sound_mps": 1495.0,
+                "scatter_density": 0.09,
+                "boundary_roughness": 0.09,
+            },
+            {
+                "region_id": 10,
+                "label": "Cystic Node 3",
+                "intensity": 0.1,
+                "a": 0.0230,
+                "b": 0.0460,
+                "x0": 0.0600,
+                "y0": -0.6050,
+                "phi_deg": 0.0,
+                "acoustic_impedance_mrayl": 1.52,
+                "attenuation_db_cm_mhz": 0.05,
+                "backscatter_coeff": 0.05,
+                "speed_of_sound_mps": 1500.0,
+                "scatter_density": 0.09,
+                "boundary_roughness": 0.09,
+            },
+        ]
+
+    def set_phantom_regions(self, regions: List[Dict[str, Any]]) -> None:
+        """Override phantom regions with user-provided editable acoustic parameters."""
+        if not isinstance(regions, list) or not regions:
+            return
+
+        defaults = self._get_modified_shepp_logan_ellipses()
+        normalized_regions: List[Dict[str, Any]] = []
+
+        for idx, region in enumerate(regions):
+            if not isinstance(region, dict):
+                continue
+
+            default_region = defaults[min(idx, len(defaults) - 1)]
+            merged = {**default_region, **region}
+
+            merged["region_id"] = int(merged.get("region_id", idx + 1))
+            merged["label"] = str(merged.get("label", f"Region {idx + 1}"))
+            merged["intensity"] = float(merged.get("intensity", default_region["intensity"]))
+            merged["a"] = max(0.01, float(merged.get("a", default_region["a"])))
+            merged["b"] = max(0.01, float(merged.get("b", default_region["b"])))
+            merged["x0"] = float(merged.get("x0", default_region["x0"]))
+            merged["y0"] = float(merged.get("y0", default_region["y0"]))
+            merged["phi_deg"] = float(merged.get("phi_deg", default_region["phi_deg"]))
+
+            merged["acoustic_impedance_mrayl"] = max(
+                1.0,
+                min(8.0, float(merged.get("acoustic_impedance_mrayl", default_region["acoustic_impedance_mrayl"])))
+            )
+            merged["attenuation_db_cm_mhz"] = max(
+                0.0,
+                min(12.0, float(merged.get("attenuation_db_cm_mhz", default_region["attenuation_db_cm_mhz"])))
+            )
+            merged["backscatter_coeff"] = max(
+                0.0,
+                min(1.0, float(merged.get("backscatter_coeff", default_region["backscatter_coeff"])))
+            )
+            merged["speed_of_sound_mps"] = max(
+                1200.0,
+                min(4000.0, float(merged.get("speed_of_sound_mps", default_region["speed_of_sound_mps"])))
+            )
+            merged["scatter_density"] = max(
+                0.0,
+                min(1.0, float(merged.get("scatter_density", default_region["scatter_density"])))
+            )
+            merged["boundary_roughness"] = max(
+                0.0,
+                min(1.0, float(merged.get("boundary_roughness", default_region["boundary_roughness"])))
+            )
+
+            normalized_regions.append(merged)
+
+        if normalized_regions:
+            self.phantom_ellipses = normalized_regions
+
+    @staticmethod
+    def _point_in_region(x_norm: float, y_norm: float, region: Dict[str, Any]) -> bool:
+        """Check whether a normalized point belongs to a phantom ellipse."""
+        phi = math.radians(float(region.get("phi_deg", 0.0)))
+        cos_phi = math.cos(phi)
+        sin_phi = math.sin(phi)
+
+        dx = x_norm - float(region.get("x0", 0.0))
+        dy = y_norm - float(region.get("y0", 0.0))
+        x_rot = dx * cos_phi + dy * sin_phi
+        y_rot = -dx * sin_phi + dy * cos_phi
+
+        a = max(1e-6, float(region.get("a", 0.1)))
+        b = max(1e-6, float(region.get("b", 0.1)))
+        norm = (x_rot * x_rot) / (a * a) + (y_rot * y_rot) / (b * b)
+        return norm <= 1.0
+
+    def _find_phantom_region(self, x_norm: float, y_norm: float) -> Optional[Dict[str, Any]]:
+        """Find top-most phantom region at a normalized coordinate."""
+        for region in reversed(self.phantom_ellipses):
+            if self._point_in_region(x_norm, y_norm, region):
+                return region
+        return None
     
     def _setup_default_tissue(self) -> None:
         """Set up default tissue layer model."""
@@ -355,21 +617,73 @@ class SimulatorUltrasound(BeamformingEngine):
         
         # Convert steering angle to radians
         steer_rad = math.radians(steering_angle_deg)
+        frequency_mhz = self.signal.frequency / 1e6
         
         # Generate depth axis
         depths_mm = [max_depth_mm * i / (num_samples - 1) for i in range(num_samples)]
         amplitudes = []
         amplitudes_db = []
+        reflections: List[Dict[str, float]] = []
+
+        prev_region: Optional[Dict[str, Any]] = None
+        cumulative_atten_db = 0.0
+        prev_depth_mm = 0.0
+
+        base_medium_impedance_mrayl = 1.48
         
         # Compute B-mode image line
         for depth in depths_mm:
-            # Base signal from tissue reflections
+            depth_ratio = max(0.0, min(1.0, depth / max(max_depth_mm, 1e-6)))
+            y_norm = 1.0 - 2.0 * depth_ratio
+            x_norm = math.sin(steer_rad) * depth_ratio * 0.75
+            region = self._find_phantom_region(x_norm, y_norm)
+
+            current_impedance = (
+                float(region.get("acoustic_impedance_mrayl", base_medium_impedance_mrayl))
+                if region
+                else base_medium_impedance_mrayl
+            )
+            current_attenuation = (
+                float(region.get("attenuation_db_cm_mhz", 0.5))
+                if region
+                else 0.5
+            )
+
+            step_cm = max(0.0, (depth - prev_depth_mm) / 10.0)
+            cumulative_atten_db += current_attenuation * frequency_mhz * step_cm * 2.0
+
+            # Base signal from tissue reflections and phantom region properties
             signal = 0.0
-            
-            # Layer boundary reflections (with steering angle effect)
-            # Steering angle changes the effective position where reflections are encountered
-            reflection = self._compute_reflection(depth, steering_angle_deg)
-            signal += reflection
+
+            # Layer boundary reflections (legacy tissue model)
+            reflection_legacy = self._compute_reflection(depth, steering_angle_deg)
+            signal += reflection_legacy * 0.25
+
+            # Region boundary reflection from impedance mismatch
+            if prev_region is not None and (
+                region is None
+                or int(prev_region.get("region_id", -1)) != int(region.get("region_id", -1))
+            ):
+                prev_impedance = float(prev_region.get("acoustic_impedance_mrayl", base_medium_impedance_mrayl))
+                z1 = prev_impedance * 1e6
+                z2 = current_impedance * 1e6
+                reflection_amp = abs((z2 - z1) / max(z2 + z1, 1e-9))
+
+                rough_prev = float(prev_region.get("boundary_roughness", 0.3))
+                rough_cur = float(region.get("boundary_roughness", rough_prev)) if region else rough_prev
+                rough_factor = 0.6 + 0.4 * ((rough_prev + rough_cur) / 2.0)
+
+                boundary_echo = reflection_amp * rough_factor
+                signal += boundary_echo
+                reflections.append({"depth_mm": depth, "amplitude": boundary_echo})
+
+            # Intra-region backscatter contribution (A-mode realism)
+            if region:
+                backscatter = float(region.get("backscatter_coeff", 0.25))
+                density = float(region.get("scatter_density", 0.5))
+                region_id = int(region.get("region_id", 0))
+                deterministic_texture = 0.5 + 0.5 * math.sin(depth * 0.29 + region_id * 1.91)
+                signal += backscatter * density * deterministic_texture
             
             # Apply steering-dependent weighting (beam pattern effect)
             # Steering angle focuses beam at certain angles, reducing signal at grazing angles
@@ -395,8 +709,9 @@ class SimulatorUltrasound(BeamformingEngine):
                     signal += scatterer.scattering_amplitude * psf
             
             # Apply attenuation with depth
-            attenuation = self._compute_attenuation(depth)
-            signal *= attenuation
+            attenuation_layer = self._compute_attenuation(depth)
+            attenuation_region = 10 ** (-cumulative_atten_db / 20.0)
+            signal *= attenuation_layer * attenuation_region
             
             # Apply focusing gain
             focus_gain = self._compute_focus_gain(depth)
@@ -419,6 +734,9 @@ class SimulatorUltrasound(BeamformingEngine):
             # Convert to dB for display
             signal_db = 20 * math.log10(max(signal, 1e-6))
             amplitudes_db.append(signal_db)
+
+            prev_depth_mm = depth
+            prev_region = region
         
         # Normalize B-mode display
         max_db = max(amplitudes_db)
@@ -436,7 +754,8 @@ class SimulatorUltrasound(BeamformingEngine):
             "speckle_snr_db": speckle_snr,
             "penetration_depth_mm": max_depth_mm,
             "focal_depth_mm": self.focal_depth_mm,
-            "dynamic_range_db": self.dynamic_range_db
+            "dynamic_range_db": self.dynamic_range_db,
+            "reflection_count": len(reflections)
         }
         
         return UltrasoundBModeResult(
@@ -445,7 +764,11 @@ class SimulatorUltrasound(BeamformingEngine):
             amplitudes_db=amplitudes_db,
             tissue_layers=self.tissue_layers.copy(),
             scatterers=self.scatterers.copy(),
-            metrics=metrics
+            metrics=metrics,
+            reflections=reflections,
+            phantom_model=self.phantom_model,
+            phantom_domain=self.phantom_domain.copy(),
+            phantom_ellipses=[ellipse.copy() for ellipse in self.phantom_ellipses]
         )
     
     def run_doppler(

@@ -1,7 +1,7 @@
 """Pydantic schemas for request/response validation"""
 
 from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict
 
 WindowType = Literal["rectangular", "hamming", "hanning", "blackman", "kaiser"]
 
@@ -159,11 +159,47 @@ class ReflectionSchema(BaseModel):
     amplitude: float
 
 
+class PhantomEllipseSchema(BaseModel):
+    """Single Shepp-Logan ellipse parameter row."""
+    intensity: float
+    a: float
+    b: float
+    x0: float
+    y0: float
+    phi_deg: float
+
+
+class UltrasoundPhantomSchema(BaseModel):
+    """Phantom definition used by frontend visualization."""
+    model: str
+    domain: List[float]
+    ellipses: List[PhantomEllipseSchema]
+
+
+class UltrasoundBModeSchema(BaseModel):
+    """B-mode response payload."""
+    depths_mm: List[float]
+    amplitudes: List[float]
+    amplitudes_db: List[float]
+    metrics: Dict[str, float]
+    phantom: Optional[UltrasoundPhantomSchema] = None
+        reflections: Optional[List[Dict[str, float]]] = None
+
+
+class UltrasoundDopplerSchema(BaseModel):
+    """Doppler response payload."""
+    frequencies_hz: List[float]
+    power: List[float]
+    power_db: List[float]
+    mean_velocity_mms: float
+    max_velocity_mms: float
+    pulsatility_index: float
+
+
 class UltrasoundResponseSchema(BaseModel):
     """Ultrasound simulation response"""
-    depths: List[float]
-    amplitudes: List[float]
-    reflections: List[ReflectionSchema]
+    bmode: UltrasoundBModeSchema
+    doppler: Optional[UltrasoundDopplerSchema] = None
 
 
 class UltrasoundResultSchema(BaseModel):
@@ -249,6 +285,10 @@ class UltrasoundParamsSchema(BaseModel):
     enable_speckle: bool = Field(default=True, description="Add speckle pattern")
     run_doppler: bool = Field(default=False, description="Compute Doppler imaging")
     target_depth_mm: float = Field(default=50, gt=0, description="Doppler imaging depth in mm")
+    phantom_regions: Optional[List[Dict[str, float | int | str]]] = Field(
+        default=None,
+        description="Optional editable phantom regions with geometric and acoustic properties"
+    )
     
     class Config:
         json_schema_extra = {
