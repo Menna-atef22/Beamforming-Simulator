@@ -80,6 +80,7 @@ export function useUltrasoundSimulatorAPI() {
         enable_speckle: params.enableSpeckle !== false,
         run_doppler: params.runDoppler === true,
         target_depth_mm: params.targetDepthMm ?? 50,
+        probe_param_rad: params.probeParamRad,
         phantom_regions: params.phantomRegions?.map((region) => ({
           region_id: region.regionId,
           label: region.label,

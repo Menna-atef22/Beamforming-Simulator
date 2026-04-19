@@ -183,7 +183,7 @@ class UltrasoundBModeSchema(BaseModel):
     amplitudes_db: List[float]
     metrics: Dict[str, float]
     phantom: Optional[UltrasoundPhantomSchema] = None
-        reflections: Optional[List[Dict[str, float]]] = None
+    reflections: Optional[List[Dict[str, float]]] = None
 
 
 class UltrasoundDopplerSchema(BaseModel):
@@ -285,6 +285,10 @@ class UltrasoundParamsSchema(BaseModel):
     enable_speckle: bool = Field(default=True, description="Add speckle pattern")
     run_doppler: bool = Field(default=False, description="Compute Doppler imaging")
     target_depth_mm: float = Field(default=50, gt=0, description="Doppler imaging depth in mm")
+    probe_param_rad: Optional[float] = Field(
+        default=None,
+        description="Probe placement parameter in radians along phantom outer boundary"
+    )
     phantom_regions: Optional[List[Dict[str, float | int | str]]] = Field(
         default=None,
         description="Optional editable phantom regions with geometric and acoustic properties"

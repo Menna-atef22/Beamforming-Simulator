@@ -69,7 +69,11 @@ export default function SimulatorUltrasound() {
   const [hoveredRegion, setHoveredRegion] = useState<HoverState | null>(null);
   const [selectedRegionIndex, setSelectedRegionIndex] = useState<number | null>(null);
   const [editorDraft, setEditorDraft] = useState<PhantomEllipse | null>(null);
+  const [probeParamRad, setProbeParamRad] = useState(Math.PI / 2);
+  const debouncedProbeParamRad = useDebounce(probeParamRad, 80);
+  const [isDraggingProbe, setIsDraggingProbe] = useState(false);
   const isInitialLoadRef = useRef(true);
+  const draggedProbeRef = useRef(false);
 
   const { simulate, error } = useUltrasoundSimulatorAPI();
   const phantomRef = useRef<HTMLCanvasElement>(null);
@@ -92,6 +96,66 @@ export default function SimulatorUltrasound() {
     () => params.phantomRegions ?? us?.phantom?.ellipses ?? [],
     [params.phantomRegions, us?.phantom?.ellipses]
   );
+
+  const outerBoundary = useMemo(() => {
+    if (!phantomRegions.length) return null;
+
+    const region = phantomRegions.reduce((largest, current) => {
+      const largestArea = largest.a * largest.b;
+      const currentArea = current.a * current.b;
+      return currentArea > largestArea ? current : largest;
+    }, phantomRegions[0]);
+
+    const phiRad = (region.phiDeg * Math.PI) / 180;
+    return {
+      ...region,
+      phiRad,
+      cosPhi: Math.cos(phiRad),
+      sinPhi: Math.sin(phiRad),
+    };
+  }, [phantomRegions]);
+
+  const computeProbePose = (paramRad: number) => {
+    if (!outerBoundary) return null;
+
+    const localX = outerBoundary.a * Math.cos(paramRad);
+    const localY = outerBoundary.b * Math.sin(paramRad);
+
+    const xNorm = outerBoundary.x0 + localX * outerBoundary.cosPhi - localY * outerBoundary.sinPhi;
+    const yNorm = outerBoundary.y0 + localX * outerBoundary.sinPhi + localY * outerBoundary.cosPhi;
+
+    const normalLocalX = Math.cos(paramRad) / Math.max(outerBoundary.a, 1e-9);
+    const normalLocalY = Math.sin(paramRad) / Math.max(outerBoundary.b, 1e-9);
+    const normalGlobalX = normalLocalX * outerBoundary.cosPhi - normalLocalY * outerBoundary.sinPhi;
+    const normalGlobalY = normalLocalX * outerBoundary.sinPhi + normalLocalY * outerBoundary.cosPhi;
+    const normalMag = Math.hypot(normalGlobalX, normalGlobalY) || 1;
+
+    const outwardX = normalGlobalX / normalMag;
+    const outwardY = normalGlobalY / normalMag;
+
+    return {
+      xNorm,
+      yNorm,
+      inwardX: -outwardX,
+      inwardY: -outwardY,
+      outwardX,
+      outwardY,
+    };
+  };
+
+  const projectPointToBoundaryParam = (xNorm: number, yNorm: number): number | null => {
+    if (!outerBoundary) return null;
+
+    const dx = xNorm - outerBoundary.x0;
+    const dy = yNorm - outerBoundary.y0;
+    const localX = dx * outerBoundary.cosPhi + dy * outerBoundary.sinPhi;
+    const localY = -dx * outerBoundary.sinPhi + dy * outerBoundary.cosPhi;
+
+    return Math.atan2(
+      localY / Math.max(outerBoundary.b, 1e-9),
+      localX / Math.max(outerBoundary.a, 1e-9)
+    );
+  };
 
   const hoveredRegionData = hoveredRegion ? phantomRegions[hoveredRegion.regionIndex] : null;
 
@@ -118,6 +182,7 @@ export default function SimulatorUltrasound() {
         ...debouncedParams,
         frequency: 5e6 / Math.max(debouncedParams.wavelength, 0.1),
         enableNoise: debouncedParams.noiseEnabled ?? debouncedParams.enableNoise ?? true,
+        probeParamRad: debouncedProbeParamRad,
       };
 
       const res = await simulate(simulationParams, isInitialLoadRef.current);
@@ -131,7 +196,7 @@ export default function SimulatorUltrasound() {
     return () => {
       isMounted = false;
     };
-  }, [debouncedParams, simulate]);
+  }, [debouncedParams, debouncedProbeParamRad, simulate]);
 
   const updateParam = <K extends keyof UltrasoundUIParams>(key: K, value: UltrasoundUIParams[K]) => {
     setParams((prev) => ({ ...prev, [key]: value }));
@@ -313,54 +378,116 @@ export default function SimulatorUltrasound() {
     ctx.lineWidth = 1.5;
     ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
 
-    const steerRad = (params.steeringAngleDeg * Math.PI) / 180;
-    const probeX = w / 2;
-    const probeY = 12;
-    const beamLength = h - 28;
-    const beamEndX = probeX + Math.sin(steerRad) * beamLength;
-    const beamEndY = probeY + Math.cos(steerRad) * beamLength;
+    const probePose = computeProbePose(probeParamRad);
+    if (probePose) {
+      const steerRad = ((params.steeringAngleDeg ?? 0) * Math.PI) / 180;
 
-    const grad = ctx.createLinearGradient(probeX, probeY, beamEndX, beamEndY);
-    grad.addColorStop(0, "hsla(270,85%,62%,0.55)");
-    grad.addColorStop(1, "hsla(320,90%,62%,0.08)");
+      const probeX = ((probePose.xNorm + 1) / 2) * w;
+      const probeY = ((1 - probePose.yNorm) / 2) * h;
 
-    ctx.save();
-    ctx.globalCompositeOperation = "screen";
-    ctx.strokeStyle = grad;
-    ctx.lineWidth = 11;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(probeX, probeY);
-    ctx.lineTo(beamEndX, beamEndY);
-    ctx.stroke();
-    ctx.restore();
+      const dirX = probePose.inwardX * Math.cos(steerRad) - probePose.inwardY * Math.sin(steerRad);
+      const dirY = probePose.inwardX * Math.sin(steerRad) + probePose.inwardY * Math.cos(steerRad);
+      const beamLengthNorm = 1.8;
 
-    ctx.fillStyle = "hsl(270,60%,50%)";
-    ctx.fillRect(w / 2 - 20, 0, 40, 14);
-    ctx.fillStyle = "hsl(270,60%,75%)";
-    ctx.font = "9px JetBrains Mono";
-    ctx.textAlign = "center";
-    ctx.fillText("PROBE", w / 2, 10);
-  }, [hoveredRegion, params.steeringAngleDeg, phantomRegions, selectedRegionIndex]);
+      const beamEndNormX = probePose.xNorm + dirX * beamLengthNorm;
+      const beamEndNormY = probePose.yNorm + dirY * beamLengthNorm;
+      const beamEndX = ((beamEndNormX + 1) / 2) * w;
+      const beamEndY = ((1 - beamEndNormY) / 2) * h;
+
+      const grad = ctx.createLinearGradient(probeX, probeY, beamEndX, beamEndY);
+      grad.addColorStop(0, "hsla(270,85%,62%,0.60)");
+      grad.addColorStop(1, "hsla(320,90%,62%,0.06)");
+
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 10;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(probeX, probeY);
+      ctx.lineTo(beamEndX, beamEndY);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.save();
+      ctx.fillStyle = "hsl(270,65%,52%)";
+      ctx.beginPath();
+      ctx.arc(probeX, probeY, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = "hsl(270,65%,72%)";
+      ctx.stroke();
+
+      const labelX = probeX + probePose.outwardX * 18;
+      const labelY = probeY - probePose.outwardY * 18;
+      ctx.fillStyle = "hsl(270,60%,80%)";
+      ctx.font = "9px JetBrains Mono";
+      ctx.textAlign = "center";
+      ctx.fillText("PROBE", labelX, labelY);
+      ctx.restore();
+    }
+  }, [hoveredRegion, params.steeringAngleDeg, phantomRegions, probeParamRad, selectedRegionIndex]);
 
   useEffect(() => {
     const canvas = phantomRef.current;
     if (!canvas) return;
 
-    const handlePointerMove = (event: MouseEvent) => {
+    const toCanvasCoords = (event: MouseEvent) => {
       const rect = canvas.getBoundingClientRect();
       const localX = event.clientX - rect.left;
       const localY = event.clientY - rect.top;
+      const canvasX = (localX * canvas.width) / Math.max(rect.width, 1);
+      const canvasY = (localY * canvas.height) / Math.max(rect.height, 1);
+      const xNorm = ((canvasX + 0.5) / canvas.width) * 2 - 1;
+      const yNorm = 1 - ((canvasY + 0.5) / canvas.height) * 2;
+
+      return { rect, localX, localY, canvasX, canvasY, xNorm, yNorm };
+    };
+
+    const isNearCurrentProbe = (canvasX: number, canvasY: number) => {
+      const probePose = computeProbePose(probeParamRad);
+      if (!probePose) return false;
+
+      const probeCanvasX = ((probePose.xNorm + 1) / 2) * canvas.width;
+      const probeCanvasY = ((1 - probePose.yNorm) / 2) * canvas.height;
+      const dist = Math.hypot(canvasX - probeCanvasX, canvasY - probeCanvasY);
+
+      return dist <= 14;
+    };
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const { canvasX, canvasY, xNorm, yNorm } = toCanvasCoords(event);
+      if (!isNearCurrentProbe(canvasX, canvasY)) return;
+
+      const projectedParam = projectPointToBoundaryParam(xNorm, yNorm);
+      if (projectedParam !== null) {
+        setProbeParamRad(projectedParam);
+      }
+
+      draggedProbeRef.current = false;
+      setIsDraggingProbe(true);
+      setHoveredRegion(null);
+      event.preventDefault();
+    };
+
+    const handlePointerMove = (event: MouseEvent) => {
+      const { rect, localX, localY, xNorm, yNorm } = toCanvasCoords(event);
+
+      if (isDraggingProbe) {
+        const projectedParam = projectPointToBoundaryParam(xNorm, yNorm);
+        if (projectedParam !== null) {
+          setProbeParamRad(projectedParam);
+          draggedProbeRef.current = true;
+          setHoveredRegion(null);
+        }
+        return;
+      }
 
       if (localX < 0 || localY < 0 || localX > rect.width || localY > rect.height) {
         setHoveredRegion(null);
         return;
       }
 
-      const canvasX = (localX * canvas.width) / Math.max(rect.width, 1);
-      const canvasY = (localY * canvas.height) / Math.max(rect.height, 1);
-      const xNorm = ((canvasX + 0.5) / canvas.width) * 2 - 1;
-      const yNorm = 1 - ((canvasY + 0.5) / canvas.height) * 2;
       const regionIndex = findRegionAtNormalizedPoint(xNorm, yNorm);
 
       if (regionIndex === null) {
@@ -376,17 +503,24 @@ export default function SimulatorUltrasound() {
     };
 
     const handlePointerLeave = () => {
+      if (isDraggingProbe) return;
       setHoveredRegion(null);
     };
 
+    const handlePointerUp = () => {
+      if (isDraggingProbe) {
+        setIsDraggingProbe(false);
+      }
+    };
+
     const handleClick = (event: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      const localX = event.clientX - rect.left;
-      const localY = event.clientY - rect.top;
-      const canvasX = (localX * canvas.width) / Math.max(rect.width, 1);
-      const canvasY = (localY * canvas.height) / Math.max(rect.height, 1);
-      const xNorm = ((canvasX + 0.5) / canvas.width) * 2 - 1;
-      const yNorm = 1 - ((canvasY + 0.5) / canvas.height) * 2;
+      const { canvasX, canvasY, xNorm, yNorm } = toCanvasCoords(event);
+
+      if (draggedProbeRef.current || isNearCurrentProbe(canvasX, canvasY)) {
+        draggedProbeRef.current = false;
+        return;
+      }
+
       const regionIndex = findRegionAtNormalizedPoint(xNorm, yNorm);
 
       if (regionIndex !== null) {
@@ -394,16 +528,20 @@ export default function SimulatorUltrasound() {
       }
     };
 
+    canvas.addEventListener("mousedown", handlePointerDown);
     canvas.addEventListener("mousemove", handlePointerMove);
     canvas.addEventListener("mouseleave", handlePointerLeave);
     canvas.addEventListener("click", handleClick);
+    window.addEventListener("mouseup", handlePointerUp);
 
     return () => {
+      canvas.removeEventListener("mousedown", handlePointerDown);
       canvas.removeEventListener("mousemove", handlePointerMove);
       canvas.removeEventListener("mouseleave", handlePointerLeave);
       canvas.removeEventListener("click", handleClick);
+      window.removeEventListener("mouseup", handlePointerUp);
     };
-  }, [phantomRegions]);
+  }, [isDraggingProbe, outerBoundary, phantomRegions, probeParamRad]);
 
   useEffect(() => {
     const canvas = bmodeRef.current;
@@ -437,14 +575,21 @@ export default function SimulatorUltrasound() {
   }, [us]);
 
   const probeData = useMemo(
-    () =>
-      Array.from({ length: 181 }, (_, i) => {
-        const angle = i - 90;
-        const steerDiff = Math.abs(angle - (params.steeringAngleDeg ?? 0));
+    () => {
+      const pose = computeProbePose(probeParamRad);
+      const baseAngleDeg = pose
+        ? (Math.atan2(pose.inwardY, pose.inwardX) * 180) / Math.PI
+        : -90;
+
+      return Array.from({ length: 361 }, (_, i) => {
+        const angle = i - 180;
+        const targetAngle = baseAngleDeg + (params.steeringAngleDeg ?? 0);
+        const steerDiff = Math.abs(angle - targetAngle);
         const gain = Math.exp(-(steerDiff * steerDiff) / (2 * 15 * 15));
         return { angle, gain: parseFloat(gain.toFixed(4)) };
-      }),
-    [params.steeringAngleDeg]
+      });
+    },
+    [params.steeringAngleDeg, probeParamRad, phantomRegions]
   );
 
   if (error && isInitialLoadRef.current) {
@@ -463,8 +608,8 @@ export default function SimulatorUltrasound() {
         <div className="glass-panel p-3 flex flex-col">
           <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">Phantom View (Modified Shepp-Logan)</h3>
           <div className="flex-1 min-h-0 flex items-center justify-center relative">
-            <canvas ref={phantomRef} className={`ultrasound-canvas rounded-lg max-w-full max-h-full ${isInitialLoadRef.current ? "loading" : "ready"} ${hoveredRegion ? "cursor-pointer" : ""}`} />
-            <div className="ultrasound-phantom-hint">Hover to inspect, click to edit region parameters</div>
+            <canvas ref={phantomRef} className={`ultrasound-canvas rounded-lg max-w-full max-h-full ${isInitialLoadRef.current ? "loading" : "ready"} ${isDraggingProbe ? "cursor-grabbing" : "cursor-grab"}`} />
+            <div className="ultrasound-phantom-hint">Drag probe along phantom boundary. Hover region to inspect, click to edit.</div>
 
             {isInitialLoadRef.current && (
               <div className="absolute text-center">

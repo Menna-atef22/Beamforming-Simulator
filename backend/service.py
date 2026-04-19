@@ -200,6 +200,7 @@ class SimulationService:
             enable_speckle = params_dict.get("enable_speckle", True)
             run_doppler = params_dict.get("run_doppler", False)
             target_depth_mm = params_dict.get("target_depth_mm", 50)
+            probe_param_rad = params_dict.get("probe_param_rad")
             phantom_regions = params_dict.get("phantom_regions")
             
             simulator = SimulatorUltrasound(
@@ -218,7 +219,8 @@ class SimulationService:
                 max_depth_mm=max_depth_mm,
                 num_samples=num_samples,
                 enable_noise=enable_noise,
-                enable_speckle=enable_speckle
+                enable_speckle=enable_speckle,
+                probe_param_rad=probe_param_rad
             )
             
             # Build result object with necessary attributes

@@ -409,6 +409,55 @@ class SimulatorUltrasound(BeamformingEngine):
             if self._point_in_region(x_norm, y_norm, region):
                 return region
         return None
+
+    def _get_outer_boundary_region(self) -> Optional[Dict[str, Any]]:
+        """Return the largest-area phantom region as outer boundary."""
+        if not self.phantom_ellipses:
+            return None
+
+        return max(
+            self.phantom_ellipses,
+            key=lambda region: float(region.get("a", 0.0)) * float(region.get("b", 0.0)),
+        )
+
+    def _compute_probe_pose(
+        self,
+        probe_param_rad: float,
+        steering_angle_deg: float,
+    ) -> Tuple[float, float, float, float]:
+        """Compute probe origin and inward beam direction in normalized domain."""
+        outer = self._get_outer_boundary_region()
+        if outer is None:
+            steer_rad = math.radians(steering_angle_deg)
+            return 0.0, 1.0, math.sin(steer_rad), -math.cos(steer_rad)
+
+        a = max(1e-6, float(outer.get("a", 0.7)))
+        b = max(1e-6, float(outer.get("b", 0.9)))
+        x0 = float(outer.get("x0", 0.0))
+        y0 = float(outer.get("y0", 0.0))
+        phi_rad = math.radians(float(outer.get("phi_deg", 0.0)))
+        cos_phi = math.cos(phi_rad)
+        sin_phi = math.sin(phi_rad)
+
+        local_x = a * math.cos(probe_param_rad)
+        local_y = b * math.sin(probe_param_rad)
+        probe_x_norm = x0 + local_x * cos_phi - local_y * sin_phi
+        probe_y_norm = y0 + local_x * sin_phi + local_y * cos_phi
+
+        normal_local_x = math.cos(probe_param_rad) / a
+        normal_local_y = math.sin(probe_param_rad) / b
+        normal_global_x = normal_local_x * cos_phi - normal_local_y * sin_phi
+        normal_global_y = normal_local_x * sin_phi + normal_local_y * cos_phi
+        normal_mag = max(1e-9, math.hypot(normal_global_x, normal_global_y))
+
+        inward_x = -normal_global_x / normal_mag
+        inward_y = -normal_global_y / normal_mag
+
+        steer_rad = math.radians(steering_angle_deg)
+        dir_x = inward_x * math.cos(steer_rad) - inward_y * math.sin(steer_rad)
+        dir_y = inward_x * math.sin(steer_rad) + inward_y * math.cos(steer_rad)
+
+        return probe_x_norm, probe_y_norm, dir_x, dir_y
     
     def _setup_default_tissue(self) -> None:
         """Set up default tissue layer model."""
@@ -595,7 +644,8 @@ class SimulatorUltrasound(BeamformingEngine):
         max_depth_mm: float = 100,
         num_samples: int = 512,
         enable_noise: bool = True,
-        enable_speckle: bool = True
+        enable_speckle: bool = True,
+        probe_param_rad: Optional[float] = None,
     ) -> UltrasoundBModeResult:
         """Execute B-mode (brightness) ultrasound imaging.
         
@@ -618,6 +668,15 @@ class SimulatorUltrasound(BeamformingEngine):
         # Convert steering angle to radians
         steer_rad = math.radians(steering_angle_deg)
         frequency_mhz = self.signal.frequency / 1e6
+
+        if probe_param_rad is None:
+            probe_param_rad = math.pi / 2
+
+        probe_x_norm, probe_y_norm, ray_dir_x, ray_dir_y = self._compute_probe_pose(
+            probe_param_rad=probe_param_rad,
+            steering_angle_deg=steering_angle_deg,
+        )
+        ray_length_norm = 1.8
         
         # Generate depth axis
         depths_mm = [max_depth_mm * i / (num_samples - 1) for i in range(num_samples)]
@@ -634,8 +693,8 @@ class SimulatorUltrasound(BeamformingEngine):
         # Compute B-mode image line
         for depth in depths_mm:
             depth_ratio = max(0.0, min(1.0, depth / max(max_depth_mm, 1e-6)))
-            y_norm = 1.0 - 2.0 * depth_ratio
-            x_norm = math.sin(steer_rad) * depth_ratio * 0.75
+            x_norm = probe_x_norm + ray_dir_x * depth_ratio * ray_length_norm
+            y_norm = probe_y_norm + ray_dir_y * depth_ratio * ray_length_norm
             region = self._find_phantom_region(x_norm, y_norm)
 
             current_impedance = (

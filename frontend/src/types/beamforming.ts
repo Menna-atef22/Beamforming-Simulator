@@ -213,6 +213,7 @@ export interface UltrasoundParams extends BeamformingParams {
   focalDepthM?: number;
   tissueThicknessM?: number;
   phantomRegions?: PhantomEllipse[];
+  probeParamRad?: number;
 }
 
 /** Acoustic tissue layer properties */
