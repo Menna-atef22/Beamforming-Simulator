@@ -221,14 +221,36 @@ class BeamformingEngine:
         
         beamwidth_deg = abs(beam_pattern.angles[right_idx] - beam_pattern.angles[left_idx])
         
-        # Compute peak sidelobe level (excluding main lobe)
+        # Compute peak sidelobe level using local peaks outside main-lobe region.
+        # Exclude main-lobe neighborhood within HPBW/2 and immediate peak neighbors.
         sidelobe_peak = 0.0
-        main_lobe_range = set(range(max(0, left_idx - 2), min(right_idx + 3, len(beam_pattern.magnitudes))))
-        
-        for i in range(len(beam_pattern.magnitudes)):
-            if i not in main_lobe_range:
-                sidelobe_peak = max(sidelobe_peak, beam_pattern.magnitudes[i])
-        
+        half_hpbw_deg = beamwidth_deg / 2.0
+        excluded_indices = {max_idx}
+        if max_idx - 1 >= 0:
+            excluded_indices.add(max_idx - 1)
+        if max_idx + 1 < len(beam_pattern.magnitudes):
+            excluded_indices.add(max_idx + 1)
+
+        for i, angle in enumerate(beam_pattern.angles):
+            if abs(angle - main_lobe_angle_deg) <= half_hpbw_deg:
+                excluded_indices.add(i)
+
+        local_sidelobe_peaks = []
+        n_points = len(beam_pattern.magnitudes)
+        for i in range(n_points):
+            if i in excluded_indices:
+                continue
+
+            mag_i = beam_pattern.magnitudes[i]
+            left_mag = beam_pattern.magnitudes[i - 1] if i > 0 else float("-inf")
+            right_mag = beam_pattern.magnitudes[i + 1] if i < n_points - 1 else float("-inf")
+
+            if mag_i >= left_mag and mag_i >= right_mag:
+                local_sidelobe_peaks.append(mag_i)
+
+        if local_sidelobe_peaks:
+            sidelobe_peak = max(local_sidelobe_peaks)
+
         # SLL in dB relative to main lobe
         if sidelobe_peak > 1e-10 and max_mag > 1e-10:
             sll_db = 20 * math.log10(sidelobe_peak / max_mag)
@@ -306,14 +328,16 @@ class BeamformingEngine:
                 if distance < 1e-6:
                     continue
                 
-                # Steering phase correction
-                steering_phase = self.array.wave_number * elem_x * math.sin(steering_angle_rad)
+                # phase_n = -2π * (x_n*sin(theta) + y_n*cos(theta)) / λ
+                steering_phase = -2.0 * math.pi * (
+                    elem_x * math.sin(steering_angle_rad) + elem_y * math.cos(steering_angle_rad)
+                ) / self.array.wavelength
                 
                 # Propagation phase
                 propagation_phase = self.array.wave_number * distance
                 
                 # Total phase
-                total_phase = propagation_phase - steering_phase
+                total_phase = propagation_phase + steering_phase
                 
                 # Amplitude with window weight and path loss
                 amplitude = weights[n] * self.signal.amplitude / math.sqrt(distance)

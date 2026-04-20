@@ -128,14 +128,16 @@ class InterferenceMap:
                     if distance < 1e-6:
                         continue
                     
-                    # Steering phase correction: k * n * d * sin(θ_steer)
-                    steering_phase = self.array.wave_number * self.array.elements[n].x * math.sin(steering_angle_rad)
+                    # phase_n = -2π * (x_n*sin(theta) + y_n*cos(theta)) / λ
+                    steering_phase = -2.0 * math.pi * (
+                        elem_x * math.sin(steering_angle_rad) + elem_y * math.cos(steering_angle_rad)
+                    ) / self.array.wavelength
                     
                     # Propagation phase: k * distance
                     propagation_phase = self.array.wave_number * distance
                     
                     # Total phase at this element
-                    total_phase = propagation_phase - steering_phase
+                    total_phase = propagation_phase + steering_phase
                     
                     # Amplitude includes: element weight, apodization, path loss (1/r)
                     element_amplitude = weights[n] * self.signal.amplitude / math.sqrt(distance)

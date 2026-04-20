@@ -4,12 +4,15 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Literal, Dict
 
 WindowType = Literal["rectangular", "hamming", "hanning", "blackman", "kaiser"]
+ArrayGeometryType = Literal["linear", "curved"]
 
 
 class BeamformingParamsSchema(BaseModel):
     """Request schema for beamforming simulation"""
     num_elements: int = Field(default=16, ge=1, le=256, description="Number of array elements")
     spacing: float = Field(default=0.5, gt=0, le=10, description="Element spacing in wavelengths")
+    geometry: ArrayGeometryType = Field(default="linear", description="Array geometry type")
+    radius: float = Field(default=5.0, ge=1.0, le=20.0, description="Curvature radius in wavelengths")
     wavelength: float = Field(default=1.0, gt=0, description="Signal wavelength")
     steering_angle_deg: float = Field(default=0, ge=-90, le=90, description="Beam steering angle in degrees")
     amplitude: float = Field(default=1.0, gt=0, description="Signal amplitude")
@@ -23,6 +26,8 @@ class BeamformingParamsSchema(BaseModel):
             "example": {
                 "num_elements": 16,
                 "spacing": 0.5,
+                "geometry": "linear",
+                "radius": 5.0,
                 "wavelength": 1.0,
                 "steering_angle_deg": 30,
                 "amplitude": 1.0,

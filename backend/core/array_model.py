@@ -1,7 +1,7 @@
-"""Linear antenna array model - OOP implementation"""
+"""Antenna array model with linear and curved geometry support - OOP implementation"""
 
 import math
-from typing import List
+from typing import List, Literal
 from dataclasses import dataclass
 
 
@@ -24,7 +24,7 @@ class ArrayElement:
 
 
 class ArrayModel:
-    """Models a linear antenna array and computes array-related parameters.
+    """Models an antenna array and computes array-related parameters.
     
     This class encapsulates the geometry and signal processing operations
     for a uniform linear antenna array (ULA), including element positioning,
@@ -45,7 +45,9 @@ class ArrayModel:
         spacing: float,
         frequency: float,
         amplitude: float = 1.0,
-        speed_of_light: float = 3e8
+        speed_of_light: float = 3e8,
+        geometry: Literal["linear", "curved"] = "linear",
+        radius: float = 5.0
     ) -> None:
         """Initialize ArrayModel with array parameters.
         
@@ -55,9 +57,11 @@ class ArrayModel:
             frequency: Operating frequency in Hz.
             amplitude: Reference amplitude for all elements (default 1.0).
             speed_of_light: Propagation speed in m/s (default: 3e8).
+            geometry: Array geometry, either "linear" or "curved".
+            radius: Curvature radius in wavelength units (used for curved geometry).
         
         Raises:
-            ValueError: If num_elements < 1, spacing <= 0, or frequency <= 0.
+            ValueError: If num_elements < 1, spacing <= 0, frequency <= 0, or radius <= 0.
         """
         if num_elements < 1:
             raise ValueError("num_elements must be >= 1")
@@ -67,11 +71,17 @@ class ArrayModel:
             raise ValueError("frequency must be > 0")
         if amplitude <= 0:
             raise ValueError("amplitude must be > 0")
+        if radius <= 0:
+            raise ValueError("radius must be > 0")
+        if geometry not in ("linear", "curved"):
+            raise ValueError("geometry must be either 'linear' or 'curved'")
         
         self.num_elements: int = num_elements
         self.spacing: float = spacing
         self.frequency: float = frequency
         self.amplitude: float = amplitude
+        self.geometry: Literal["linear", "curved"] = geometry
+        self.radius: float = radius
         
         # Compute wavelength: λ = c / f
         self.wavelength: float = speed_of_light / frequency
@@ -79,7 +89,7 @@ class ArrayModel:
         # Compute wave number: k = 2π / λ
         self.wave_number: float = (2 * math.pi) / self.wavelength
         
-        # Create linear array elements
+        # Create array elements according to selected geometry
         self.elements: List[ArrayElement] = self._create_elements()
     
     def _create_elements(self) -> List[ArrayElement]:
@@ -93,16 +103,28 @@ class ArrayModel:
         """
         elements = []
         
-        # Center the array: offset = (N-1) * d / 2
-        offset = ((self.num_elements - 1) * self.spacing * self.wavelength) / 2
+        center = (self.num_elements - 1) / 2.0
+        d_m = self.spacing * self.wavelength
+        r_m = self.radius * self.wavelength
         
         for n in range(self.num_elements):
-            x_position = n * self.spacing * self.wavelength - offset
+            n_centered = n - center
+
+            if self.geometry == "curved":
+                # alpha_n = (n - (N-1)/2) * d / R  [radians]
+                alpha_n = (n_centered * d_m) / r_m
+                # x_n = R * sin(alpha_n), y_n = R * (1 - cos(alpha_n))
+                x_position = r_m * math.sin(alpha_n)
+                y_position = r_m * (1.0 - math.cos(alpha_n))
+            else:
+                # x_n = (n - (N-1)/2) * d, y_n = 0
+                x_position = n_centered * d_m
+                y_position = 0.0
             elements.append(
                 ArrayElement(
                     index=n,
                     x=x_position,
-                    y=0.0,
+                    y=y_position,
                     amplitude=self.amplitude,
                     phase=0.0
                 )
@@ -134,13 +156,15 @@ class ArrayModel:
         steering_vector = []
         
         for elem in self.elements:
-            # Steering phase: φ = k * x * sin(θ)
-            steering_phase = self.wave_number * elem.x * math.sin(angle_rad)
+            # phase_n = -2π * (x_n*sin(theta) + y_n*cos(theta)) / λ
+            steering_phase = -2.0 * math.pi * (
+                elem.x * math.sin(angle_rad) + elem.y * math.cos(angle_rad)
+            ) / self.wavelength
             
-            # Steering vector component: exp(-j * φ)
+            # Steering vector component: exp(j * phase_n)
             sv_component = complex(
-                math.cos(-steering_phase),
-                math.sin(-steering_phase)
+                math.cos(steering_phase),
+                math.sin(steering_phase)
             )
             steering_vector.append(sv_component)
         
@@ -186,8 +210,14 @@ class ArrayModel:
             imag_sum = 0.0
             
             for n, elem in enumerate(self.elements):
-                # Phase contribution: φ = k * x * (sin(θ) - sin(θ_steer))
-                phase = self.wave_number * elem.x * (math.sin(angle_rad) - math.sin(steer_rad))
+                # phase(θ) = -2π * (x_n*sin(θ) + y_n*cos(θ)) / λ
+                obs_phase = -2.0 * math.pi * (
+                    elem.x * math.sin(angle_rad) + elem.y * math.cos(angle_rad)
+                ) / self.wavelength
+                steer_phase = -2.0 * math.pi * (
+                    elem.x * math.sin(steer_rad) + elem.y * math.cos(steer_rad)
+                ) / self.wavelength
+                phase = obs_phase - steer_phase
                 
                 # Weighted amplitude and phase
                 w = weights[n]

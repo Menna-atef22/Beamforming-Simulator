@@ -40,6 +40,8 @@ class SimulationService:
         try:
             num_elements = params_dict.get("num_elements", 16)
             spacing = params_dict.get("spacing", 0.5)
+            geometry = params_dict.get("geometry", "linear")
+            radius = params_dict.get("radius", 5.0)
             frequency = params_dict.get("frequency", 10e9)
             steering_angle_deg = params_dict.get("steering_angle_deg", 0)
             amplitude = params_dict.get("amplitude", 1.0)
@@ -49,7 +51,7 @@ class SimulationService:
             grid_size = params_dict.get("grid_size", 360)
             
             # Create array model and run simulation
-            array = ArrayModel(num_elements, spacing, frequency, amplitude)
+            array = ArrayModel(num_elements, spacing, frequency, amplitude, geometry=geometry, radius=radius)
             signal = SignalModel(frequency, 3e8, amplitude)
             noise = NoiseModel(snr_db)
             window = WindowFunction(window_type, num_elements)

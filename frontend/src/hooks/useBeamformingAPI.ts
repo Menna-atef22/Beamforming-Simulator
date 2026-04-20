@@ -25,6 +25,8 @@ export function useBeamformingAPI() {
         const requestBody = {
           num_elements: params.num_elements ?? params.numElements ?? 8,
           spacing: params.spacing ?? 0.5,
+          geometry: params.geometry ?? "linear",
+          radius: params.radius ?? 5,
           wavelength: params.wavelength ?? 1.0,
           steering_angle_deg: params.steering_angle_deg ?? params.steeringAngleDeg ?? 0,
           amplitude: params.amplitude ?? 1.0,

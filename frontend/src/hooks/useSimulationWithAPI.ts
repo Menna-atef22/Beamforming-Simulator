@@ -5,6 +5,8 @@ import { useBeamformingAPI } from "./useBeamformingAPI";
 const defaultParams: BeamformingParams = {
   numElements: 8,
   spacing: 0.5,
+  geometry: "linear",
+  radius: 5,
   wavelength: 1.0,
   steeringAngleDeg: 0,
   amplitude: 1.0,
@@ -42,6 +44,8 @@ export function useSimulationWithAPI(
         const response = await api.simulate({
           num_elements: params.numElements,
           spacing: params.spacing,
+          geometry: params.geometry,
+          radius: params.radius,
           wavelength: params.wavelength,
           steering_angle_deg: params.steeringAngleDeg,
           amplitude: params.amplitude,

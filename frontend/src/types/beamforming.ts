@@ -11,12 +11,17 @@
 export interface BeamformingParams {
   numElements: number;
   spacing: number;
+  geometry?: ArrayGeometry;
+  radius?: number;
   frequency: number;
+  wavelength?: number;
   steeringAngleDeg?: number;
   amplitude: number;
   snrDb: number;
   windowType: WindowType;
   enableNoise?: boolean;
+  noiseEnabled?: boolean;
+  apodizationEnabled?: boolean;
   gridSize?: number;
 }
 
@@ -64,6 +69,7 @@ export interface BeamformingResult {
 
 /** Window function types */
 export type WindowType = "rectangular" | "hamming" | "hanning" | "blackman" | "kaiser";
+export type ArrayGeometry = "linear" | "curved";
 
 // ============================================================================
 // 5G Network Simulator Types

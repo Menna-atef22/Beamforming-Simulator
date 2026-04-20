@@ -16,6 +16,8 @@ export default function Home() {
   const [params, setParams] = useState<BeamformingParams>({
     numElements: 8,
     spacing: 0.5,
+    geometry: "linear",
+    radius: 5,
     wavelength: 1.0,
     steeringAngleDeg: 0,
     amplitude: 1.0,
@@ -43,6 +45,8 @@ export default function Home() {
         const res = await simulate({
           num_elements: debouncedParams.numElements,
           spacing: debouncedParams.spacing,
+          geometry: debouncedParams.geometry,
+          radius: debouncedParams.radius,
           wavelength: debouncedParams.wavelength,
           steering_angle_deg: debouncedParams.steeringAngleDeg,
           amplitude: debouncedParams.amplitude,

@@ -2,6 +2,7 @@ import { BeamformingParams, BeamMetrics, WindowType } from "@/types/beamforming"
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface ControlPanelProps {
@@ -39,6 +40,7 @@ function SectionHeader({ title }: { title: string }) {
 
 export default function ControlPanel({ params, onParamChange, metrics, extra }: ControlPanelProps) {
   const phaseShift = ((2 * Math.PI / params.wavelength) * params.spacing * Math.sin((params.steeringAngleDeg * Math.PI) / 180)).toFixed(3);
+  const geometry = params.geometry ?? "linear";
 
   return (
     <div className="p-4 space-y-3 h-full overflow-y-auto bg-card/60">
@@ -52,6 +54,43 @@ export default function ControlPanel({ params, onParamChange, metrics, extra }: 
       <SectionHeader title="Beamforming" />
       <SliderControl label="Elements (N)" value={params.numElements} min={2} max={32} step={1} onChange={(v) => onParamChange("numElements", v)} />
       <SliderControl label="Spacing (d/λ)" value={params.spacing} min={0.1} max={2.0} step={0.05} unit="λ" onChange={(v) => onParamChange("spacing", v)} />
+      <div className="space-y-1.5">
+        <div className="flex justify-between items-center">
+          <Label className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">Geometry</Label>
+          <span className="text-xs font-mono text-foreground capitalize">{geometry}</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant={geometry === "linear" ? "default" : "secondary"}
+            className="h-8 text-[10px] font-mono uppercase tracking-wider"
+            onClick={() => onParamChange("geometry", "linear")}
+          >
+            Linear
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={geometry === "curved" ? "default" : "secondary"}
+            className="h-8 text-[10px] font-mono uppercase tracking-wider"
+            onClick={() => onParamChange("geometry", "curved")}
+          >
+            Curved
+          </Button>
+        </div>
+      </div>
+      {geometry === "curved" && (
+        <SliderControl
+          label="Radius (R)"
+          value={params.radius ?? 5}
+          min={1}
+          max={20}
+          step={0.1}
+          unit="λ"
+          onChange={(v) => onParamChange("radius", v)}
+        />
+      )}
       <SliderControl label="Frequency" value={params.wavelength} min={0.1} max={3.0} step={0.05} unit="m" onChange={(v) => onParamChange("wavelength", v)} />
       <SliderControl label="Steering (θ)" value={params.steeringAngleDeg} min={-90} max={90} step={1} unit="°" onChange={(v) => onParamChange("steeringAngleDeg", v)} />
       <SliderControl label="Amplitude" value={params.amplitude} min={0.1} max={2.0} step={0.05} onChange={(v) => onParamChange("amplitude", v)} />
