@@ -84,6 +84,8 @@ class SimulationService:
                 - auto_steer: Auto-steer to nearest user (default: True)
                 - enable_noise: Add noise (default: False)
                 - grid_size: Angle grid resolution (default: 80)
+                - users: Optional list of {id, x, y} to override default positions
+                - towers: Optional list of {id, x, y} to override default positions
         
         Returns:
             Dictionary with "success" and either "data" or "error" key.
@@ -96,6 +98,14 @@ class SimulationService:
             auto_steer = params_dict.get("auto_steer", True)
             enable_noise = params_dict.get("enable_noise", False)
             grid_size = params_dict.get("grid_size", 80)
+            custom_users = params_dict.get("users")
+            custom_towers = params_dict.get("towers")
+            # current_connections: {str(user_id): tower_id} from frontend (JSON keys are strings)
+            raw_connections = params_dict.get("current_connections")
+            current_connections = (
+                {int(k): v for k, v in raw_connections.items()}
+                if isinstance(raw_connections, dict) else None
+            )
             
             simulator = Simulator5G(
                 num_elements=num_elements,
@@ -104,10 +114,29 @@ class SimulationService:
                 snr_db=snr_db
             )
             
+            # Apply custom user positions if provided (override defaults)
+            if custom_users is not None:
+                simulator.users.clear()
+                for u in custom_users:
+                    uid = u["id"] if isinstance(u, dict) else u.id
+                    ux = u["x"] if isinstance(u, dict) else u.x
+                    uy = u["y"] if isinstance(u, dict) else u.y
+                    simulator.add_user(user_id=uid, x=ux, y=uy)
+            
+            # Apply custom tower positions if provided (override defaults)
+            if custom_towers is not None:
+                simulator.towers.clear()
+                for t in custom_towers:
+                    tid = t["id"] if isinstance(t, dict) else t.id
+                    tx = t["x"] if isinstance(t, dict) else t.x
+                    ty = t["y"] if isinstance(t, dict) else t.y
+                    simulator.add_tower(tower_id=tid, x=tx, y=ty)
+            
             result = simulator.run(
                 auto_steer=auto_steer,
                 enable_noise=enable_noise,
-                grid_size=grid_size
+                grid_size=grid_size,
+                current_connections=current_connections,
             )
             
             return {

@@ -14,19 +14,22 @@ export interface Simulator5GResponse {
 }
 export type { Tower, User };
 
+export interface UserPosition { id: number; x: number; y: number; }
+export interface TowerPosition { id: number; x: number; y: number; }
+
 export function use5GSimulatorAPI() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const simulate = useCallback(async (
-    params: FiveGParams,
+    params: FiveGParams & Record<string, any>,
     _isInitialLoad?: boolean
   ): Promise<Simulator5GResponse | null> => {
     setLoading(true);
     setError(null);
 
     try {
-      const requestBody = {
+      const requestBody: Record<string, any> = {
         num_elements: params.numElements ?? 16,
         spacing: params.spacing ?? 0.5,
         frequency: params.frequency ?? 28e9,
@@ -35,6 +38,12 @@ export function use5GSimulatorAPI() {
         enable_noise: params.enableNoise !== false,
         grid_size: params.gridSize ?? 80,
       };
+
+      // Forward custom user/tower positions if present
+      if (params.users) requestBody.users = params.users;
+      if (params.towers) requestBody.towers = params.towers;
+      // Forward previous connection state for handoff hysteresis
+      if (params.current_connections) requestBody.current_connections = params.current_connections;
 
       const response = await apiFetch("/api/simulate/5g", {
         method: "POST",

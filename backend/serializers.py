@@ -80,7 +80,8 @@ def serialize_5g_result(result) -> Dict[str, Any]:
                 "y": tower.y,
                 "steering_angle_deg": tower.steering_angle_deg,
                 "beamwidth_deg": getattr(tower, "beamwidth_deg", 10.0),
-                "max_gain_db": getattr(tower, "max_gain_db", 0.0)
+                "max_gain_db": getattr(tower, "max_gain_db", 0.0),
+                "coverage_radius_m": getattr(tower, "coverage_radius_m", 5.0),
             }
             for tower in result.towers
         ],
@@ -90,7 +91,8 @@ def serialize_5g_result(result) -> Dict[str, Any]:
                 "x": user.x,
                 "y": user.y,
                 "signal_strength": user.signal_strength,
-                "snr_db": getattr(user, "snr_db", 30.0)
+                "snr_db": getattr(user, "snr_db", 30.0),
+                "connected_tower_id": getattr(user, "connected_tower_id", None),
             }
             for user in result.users
         ],

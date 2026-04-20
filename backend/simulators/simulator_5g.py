@@ -22,6 +22,7 @@ class Tower:
         steering_angle_deg: Current main beam steering angle in degrees.
         beamwidth_deg: Main lobe beamwidth in degrees.
         max_gain_db: Peak antenna gain in dB.
+        coverage_radius_m: Visible coverage radius in meters (cell radius).
     """
     id: int
     x: float
@@ -29,6 +30,7 @@ class Tower:
     steering_angle_deg: float = 0.0
     beamwidth_deg: float = 30.0
     max_gain_db: float = 20.0
+    coverage_radius_m: float = 5.0
 
 
 @dataclass
@@ -41,12 +43,14 @@ class User:
         y: Y position in meters.
         signal_strength: Received signal strength (linear).
         snr_db: Signal-to-noise ratio in dB.
+        connected_tower_id: Tower this user is currently connected to (None = unconnected).
     """
     id: int
     x: float
     y: float
     signal_strength: float = 0.0
     snr_db: float = 0.0
+    connected_tower_id: Optional[int] = None
 
 
 @dataclass
@@ -110,6 +114,10 @@ class Simulator5G(BeamformingEngine):
     
     # Reference distance (1 meter) for path loss calculation
     REFERENCE_DISTANCE = 1.0
+
+    # Hysteresis margin (dB): a new tower must be this much stronger
+    # than the current one before triggering a handoff.
+    HANDOFF_MARGIN_DB = 3.0
     
     def __init__(
         self,
@@ -377,6 +385,53 @@ class Simulator5G(BeamformingEngine):
         
         return connectivity
     
+    def compute_user_connections(
+        self,
+        current_connections: Optional[Dict[int, int]] = None
+    ) -> Dict[int, Optional[int]]:
+        """Determine which tower each user connects to (one tower per user).
+
+        Uses max signal-strength selection with hysteresis: a user stays with
+        its current tower unless a competing tower offers HANDOFF_MARGIN_DB
+        dB more signal, preventing rapid ping-pong at cell boundaries.
+
+        Args:
+            current_connections: Optional map of {user_id: tower_id} from the
+                previous simulation step.  Pass None on the first call.
+
+        Returns:
+            Dict mapping user_id -> tower_id (or None if no tower in range).
+        """
+        # Build per-user signal map:  {user_id: {tower_id: signal_linear}}
+        signal_map: Dict[int, Dict[int, float]] = {u.id: {} for u in self.users}
+
+        for conn in self.compute_tower_connectivity():
+            signal_map[conn.user_id][conn.tower_id] = conn.signal_strength
+
+        connections: Dict[int, Optional[int]] = {}
+
+        for user in self.users:
+            sigs = signal_map.get(user.id, {})
+            if not sigs:
+                connections[user.id] = None
+                continue
+
+            best_tower_id = max(sigs, key=lambda tid: sigs[tid])
+            best_signal   = sigs[best_tower_id]
+
+            # Apply hysteresis if we were already connected somewhere
+            prev_tid = (current_connections or {}).get(user.id)
+            if prev_tid is not None and prev_tid in sigs:
+                prev_signal = sigs[prev_tid]
+                margin_ratio = 10 ** (self.HANDOFF_MARGIN_DB / 20)  # linear
+                if best_signal < prev_signal * margin_ratio:
+                    # Not strong enough to trigger handoff — stay put
+                    best_tower_id = prev_tid
+
+            connections[user.id] = best_tower_id
+
+        return connections
+
     def update_user_signal_strength(self) -> None:
         """Update signal strength for each user based on all towers.
         
@@ -384,6 +439,7 @@ class Simulator5G(BeamformingEngine):
         """
         for user in self.users:
             total_signal = 0.0
+
             
             for tower in self.towers:
                 dx = user.x - tower.x
@@ -412,7 +468,8 @@ class Simulator5G(BeamformingEngine):
         self,
         auto_steer: bool = True,
         enable_noise: bool = False,
-        grid_size: int = 80
+        grid_size: int = 80,
+        current_connections: Optional[Dict[int, int]] = None
     ) -> FiveGResult:
         """Execute 5G network simulation.
         
@@ -420,6 +477,7 @@ class Simulator5G(BeamformingEngine):
             auto_steer: Whether to auto-steer towers toward nearest user (default: True).
             enable_noise: Whether to add noise to simulations (default: False).
             grid_size: Grid size for beam pattern computation (default: 80).
+            current_connections: Previous {user_id: tower_id} map for handoff hysteresis.
         
         Returns:
             FiveGResult with towers, users, connectivity, and beam patterns.
@@ -437,8 +495,13 @@ class Simulator5G(BeamformingEngine):
         # Update signal strength for all users
         self.update_user_signal_strength()
         
-        # Compute connectivity map
+        # Compute full connectivity map (all tower–user pairs)
         connectivity = self.compute_tower_connectivity()
+
+        # Determine which single tower each user is connected to (with hysteresis)
+        user_connections = self.compute_user_connections(current_connections)
+        for user in self.users:
+            user.connected_tower_id = user_connections.get(user.id)
         
         # Generate beam patterns for each tower
         beam_patterns = []
@@ -479,6 +542,7 @@ class Simulator5G(BeamformingEngine):
             "min_signal": min((u.signal_strength for u in self.users), default=0)
         }
         
+        # Coverage radius is a Tower attribute (already set)
         return FiveGResult(
             towers=self.towers.copy(),
             users=self.users.copy(),

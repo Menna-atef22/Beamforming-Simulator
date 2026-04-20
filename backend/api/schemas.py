@@ -225,6 +225,20 @@ class ErrorResponseSchema(BaseModel):
 # New Parameter Schemas for OOP Simulators
 # ============================================================================
 
+class UserPositionSchema(BaseModel):
+    """User position override for 5G simulation"""
+    id: int
+    x: float
+    y: float
+
+
+class TowerPositionSchema(BaseModel):
+    """Tower position override for 5G simulation"""
+    id: int
+    x: float
+    y: float
+
+
 class FiveGParamsSchema(BaseModel):
     """5G simulation parameters"""
     num_elements: int = Field(default=16, ge=4, le=64, description="Antenna elements per tower")
@@ -234,6 +248,9 @@ class FiveGParamsSchema(BaseModel):
     auto_steer: bool = Field(default=True, description="Auto-steer towers toward nearest user")
     enable_noise: bool = Field(default=False, description="Add noise to simulation")
     grid_size: int = Field(default=80, ge=16, le=360, description="Angle grid resolution")
+    users: Optional[List[UserPositionSchema]] = Field(default=None, description="Custom user positions (overrides defaults)")
+    towers: Optional[List[TowerPositionSchema]] = Field(default=None, description="Custom tower positions (overrides defaults)")
+    current_connections: Optional[Dict[str, int]] = Field(default=None, description="Previous {user_id: tower_id} map for handoff hysteresis")
     
     class Config:
         json_schema_extra = {
@@ -244,7 +261,8 @@ class FiveGParamsSchema(BaseModel):
                 "snr_db": 30,
                 "auto_steer": True,
                 "enable_noise": False,
-                "grid_size": 80
+                "grid_size": 80,
+                "users": [{"id": 101, "x": 1.0, "y": 3.0}, {"id": 102, "x": -2.0, "y": 4.0}]
             }
         }
 

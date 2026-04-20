@@ -1,5 +1,7 @@
 .simulator-canvas {
   aspect-ratio: 1;
+  transition: opacity 0.3s ease;
+  cursor: crosshair;
 }
 
 .simulator-canvas.loading {
@@ -12,4 +14,11 @@
 
 .loading-overlay {
   background-color: hsla(240, 10%, 8%, 0.5);
+}
+
+/* Selection ring glow animation */
+@keyframes pulse-ring {
+  0%   { transform: scale(1);   opacity: 0.5; }
+  50%  { transform: scale(1.15); opacity: 0.2; }
+  100% { transform: scale(1);   opacity: 0.5; }
 }
