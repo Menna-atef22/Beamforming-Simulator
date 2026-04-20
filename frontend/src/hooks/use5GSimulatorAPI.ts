@@ -5,8 +5,7 @@
 
 import { useState, useCallback } from "react";
 import type { FiveGParams, FiveGResult, Tower, User } from "../types/beamforming";
-
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
+import { apiFetch } from "@/lib/apiClient";
 
 // Type exports for components
 export interface Simulator5GResponse {
@@ -37,7 +36,7 @@ export function use5GSimulatorAPI() {
         grid_size: params.gridSize ?? 80,
       };
 
-      const response = await fetch(`${API_BASE}/api/simulate/5g`, {
+      const response = await apiFetch("/api/simulate/5g", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

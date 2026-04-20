@@ -30,7 +30,7 @@ export default function Home() {
   const [result, setResult] = useState<BeamformingResult | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { simulate } = useBeamformingAPI();
+  const { simulate, error: apiError } = useBeamformingAPI();
 
   // Run simulation when debounced params change - FIXED: no state in deps
   useEffect(() => {
@@ -82,10 +82,8 @@ export default function Home() {
           };
           setResult(converted);
           isInitialLoadRef.current = false;
-        } else if (res?.error) {
-          setError(res.error);
         } else {
-          setError("Unknown error during simulation");
+          setError(res.error || apiError || "Simulation failed");
         }
       } catch (err) {
         if (isMounted) {

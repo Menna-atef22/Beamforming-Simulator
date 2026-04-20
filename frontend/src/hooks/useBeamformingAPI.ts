@@ -8,17 +8,16 @@ import type {
   BeamformingParams,
   BeamformingResult,
 } from "../types/beamforming";
+import { apiFetch } from "@/lib/apiClient";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
-
-export type BeamformingAPIResponse = { success: boolean; data: any };
+export type BeamformingAPIResponse = { success: boolean; data?: any; error?: string };
 
 export function useBeamformingAPI() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const simulate = useCallback(
-    async (params: any): Promise<BeamformingAPIResponse | null> => {
+    async (params: any): Promise<BeamformingAPIResponse> => {
       setLoading(true);
       setError(null);
 
@@ -35,7 +34,7 @@ export function useBeamformingAPI() {
           apodization_enabled: params.apodization_enabled !== undefined ? params.apodization_enabled : (params.apodizationEnabled ?? false),
         };
 
-        const response = await fetch(`${API_BASE}/api/simulate/beamforming`, {
+        const response = await apiFetch("/api/simulate/beamforming", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -54,7 +53,7 @@ export function useBeamformingAPI() {
         const message = err instanceof Error ? err.message : "Unknown error";
         setError(message);
         console.error("[useBeamformingAPI] Error:", message);
-        return null;
+        return { success: false, error: message };
       } finally {
         setLoading(false);
       }

@@ -5,8 +5,7 @@
 
 import { useState, useCallback } from "react";
 import type { RadarParams, RadarScanResult, RadarTarget } from "../types/beamforming";
-
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
+import { apiFetch } from "@/lib/apiClient";
 
 // Type exports for components
 export interface SimulatorRadarResponse {
@@ -39,7 +38,7 @@ export function useRadarSimulatorAPI() {
         compute_doppler: params.computeDoppler !== false,
       };
 
-      const response = await fetch(`${API_BASE}/api/simulate/radar`, {
+      const response = await apiFetch("/api/simulate/radar", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

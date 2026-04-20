@@ -84,7 +84,7 @@ export function useSimulationWithAPI(
         } else if (response?.error) {
           setError(response.error);
         } else {
-          setError("Unknown error during simulation");
+          setError(api.error || "Simulation failed");
         }
       } catch (err) {
         if (isMounted) {

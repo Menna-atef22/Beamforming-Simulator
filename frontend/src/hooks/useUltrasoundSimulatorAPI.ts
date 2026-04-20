@@ -5,8 +5,7 @@
 
 import { useState, useCallback } from "react";
 import type { UltrasoundParams, UltrasoundResult, Scatterer } from "../types/beamforming";
-
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:5000";
+import { apiFetch } from "@/lib/apiClient";
 
 // Type exports for components
 export interface SimulatorUltrasoundResponse {
@@ -100,7 +99,7 @@ export function useUltrasoundSimulatorAPI() {
         })),
       };
 
-      const response = await fetch(`${API_BASE}/api/simulate/ultrasound`, {
+      const response = await apiFetch("/api/simulate/ultrasound", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
