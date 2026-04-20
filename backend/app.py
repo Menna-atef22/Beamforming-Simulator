@@ -16,11 +16,11 @@ try:
     # Try relative imports first (when run as module)
     from .api.routes import router
 except ImportError:
-    # Fall back to absolute imports (when run directly)
+    # Fall back to package import (when run directly from backend/)
     import sys
     import os
     sys.path.insert(0, os.path.dirname(__file__))
-    from api.routes import router
+    from backend.api.routes import router
 
 app = FastAPI(
     title="Beam Weaver Backend",
