@@ -23,6 +23,8 @@ class Tower:
         beamwidth_deg: Main lobe beamwidth in degrees.
         max_gain_db: Peak antenna gain in dB.
         coverage_radius_m: Visible coverage radius in meters (cell radius).
+        num_elements: Per-tower element count override (None = use simulator default).
+        frequency: Per-tower frequency override in Hz (None = use simulator default).
     """
     id: int
     x: float
@@ -31,6 +33,8 @@ class Tower:
     beamwidth_deg: float = 30.0
     max_gain_db: float = 20.0
     coverage_radius_m: float = 5.0
+    num_elements: Optional[int] = None
+    frequency: Optional[float] = None
 
 
 @dataclass
@@ -328,6 +332,83 @@ class Simulator5G(BeamformingEngine):
             
             tower.steering_angle_deg = best_angle
     
+    def compute_element_allocations(
+        self,
+        user_connections: Dict[int, Optional[int]]
+    ) -> Dict[int, List[Dict]]:
+        """Split each tower's elements among its connected users.
+
+        When a tower serves multiple users, its antenna elements are divided
+        into contiguous sub-arrays (one per user), each steered independently.
+        The split is even; any remainder elements are appended to the last user.
+
+        Args:
+            user_connections: {user_id: tower_id} as returned by
+                compute_user_connections().
+
+        Returns:
+            {tower_id: [
+                {
+                    "user_id":       int,
+                    "num_elements":  int,
+                    "element_start": int,   # 0-based inclusive
+                    "element_end":   int,   # 0-based exclusive
+                    "angle_deg":     float, # steering angle toward user
+                    "fraction":      float, # share of total elements (0-1)
+                }
+            ]}
+        """
+        # Group connected users per tower
+        tower_to_users: Dict[int, List[int]] = {t.id: [] for t in self.towers}
+        for uid, tid in user_connections.items():
+            if tid is not None and tid in tower_to_users:
+                tower_to_users[tid].append(uid)
+
+        user_by_id = {u.id: u for u in self.users}
+        tower_by_id = {t.id: t for t in self.towers}
+
+        allocations: Dict[int, List[Dict]] = {}
+        for tower in self.towers:
+            n_total = tower.num_elements if tower.num_elements is not None else self.array.num_elements
+            connected_uids = tower_to_users.get(tower.id, [])
+
+            if not connected_uids:
+                allocations[tower.id] = []
+                continue
+
+            n_users = len(connected_uids)
+            base_share = n_total // n_users
+            remainder   = n_total - base_share * n_users
+
+            entries: List[Dict] = []
+            cursor = 0
+            for i, uid in enumerate(connected_uids):
+                share = base_share + (1 if i == n_users - 1 else 0) * remainder
+                share = max(1, share)
+
+                user = user_by_id.get(uid)
+                if user is not None:
+                    dx = user.x - tower.x
+                    dy = user.y - tower.y
+                    angle_deg = math.atan2(dx, dy) * 180 / math.pi
+                else:
+                    angle_deg = 0.0
+
+                entries.append({
+                    "user_id":       uid,
+                    "num_elements":  share,
+                    "element_start": cursor,
+                    "element_end":   cursor + share,
+                    "angle_deg":     angle_deg,
+                    "fraction":      share / max(1, n_total),
+                })
+                cursor += share
+
+            allocations[tower.id] = entries
+
+        return allocations
+
+
     def compute_tower_connectivity(self) -> List[TowerConnectivityInfo]:
         """Compute connectivity between all towers and users.
         
@@ -502,21 +583,50 @@ class Simulator5G(BeamformingEngine):
         user_connections = self.compute_user_connections(current_connections)
         for user in self.users:
             user.connected_tower_id = user_connections.get(user.id)
-        
-        # Generate beam patterns for each tower
+
+        # Compute element allocations (split per shared-tower users)
+        element_allocations = self.compute_element_allocations(user_connections)
+
+        # Generate beam patterns for each tower (using per-tower overrides when set)
         beam_patterns = []
+        # Save simulator-wide defaults for clean restore
+        default_array  = self.array
+        default_freq   = self.signal.frequency
+        default_window = self.window
+
         for tower in self.towers:
+            # Resolve effective params for this tower
+            n_elem = tower.num_elements if tower.num_elements is not None else default_array.num_elements
+            freq   = tower.frequency    if tower.frequency    is not None else default_freq
+            overriding = (n_elem != default_array.num_elements or freq != default_freq)
+
+            if overriding:
+                # Swap to a fresh array+window pair for this tower's computation
+                self.array         = ArrayModel(n_elem, default_array.spacing, freq,
+                                               default_array.amplitude, self.speed_of_light)
+                self.signal.frequency = freq
+                self.window        = WindowFunction(default_window.window_type, n_elem)
+
             beam_result = self.run_simulation(
                 steering_angle_deg=tower.steering_angle_deg,
                 enable_noise=enable_noise,
                 grid_size=grid_size
             )
-            
+
+            if overriding:
+                # Restore originals
+                self.array            = default_array
+                self.signal.frequency = default_freq
+                self.window           = default_window
+
             beam_patterns.append({
                 "tower_id": tower.id,
                 "tower_x": tower.x,
                 "tower_y": tower.y,
                 "steering_angle_deg": tower.steering_angle_deg,
+                "num_elements": n_elem,
+                "frequency": freq,
+                "element_allocations": element_allocations.get(tower.id, []),
                 "angles": beam_result.beam_pattern.angles,
                 "magnitudes": beam_result.beam_pattern.magnitudes,
                 "magnitudes_db": beam_result.beam_pattern.magnitudes_db,
@@ -528,6 +638,7 @@ class Simulator5G(BeamformingEngine):
                     "gain_peak": beam_result.metrics.gain_peak
                 }
             })
+
         
         # Compute network coverage metrics
         total_coverage = sum(u.signal_strength for u in self.users) if self.users else 0

@@ -123,14 +123,24 @@ class SimulationService:
                     uy = u["y"] if isinstance(u, dict) else u.y
                     simulator.add_user(user_id=uid, x=ux, y=uy)
             
-            # Apply custom tower positions if provided (override defaults)
+            # Apply custom tower positions + per-tower param overrides
             if custom_towers is not None:
                 simulator.towers.clear()
                 for t in custom_towers:
-                    tid = t["id"] if isinstance(t, dict) else t.id
-                    tx = t["x"] if isinstance(t, dict) else t.x
-                    ty = t["y"] if isinstance(t, dict) else t.y
+                    is_dict = isinstance(t, dict)
+                    tid   = t["id"]               if is_dict else t.id
+                    tx    = t["x"]                if is_dict else t.x
+                    ty    = t["y"]                if is_dict else t.y
+                    t_n   = t.get("num_elements")      if is_dict else getattr(t, "num_elements", None)
+                    t_f   = t.get("frequency")         if is_dict else getattr(t, "frequency", None)
+                    t_r   = t.get("coverage_radius_m") if is_dict else getattr(t, "coverage_radius_m", None)
                     simulator.add_tower(tower_id=tid, x=tx, y=ty)
+                    # Apply per-tower overrides onto the just-added Tower object
+                    added = simulator.towers[-1]
+                    if t_n is not None:      added.num_elements      = int(t_n)
+                    if t_f is not None:      added.frequency         = float(t_f)
+                    if t_r is not None:      added.coverage_radius_m = float(t_r)
+
             
             result = simulator.run(
                 auto_steer=auto_steer,

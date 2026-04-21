@@ -82,9 +82,12 @@ def serialize_5g_result(result) -> Dict[str, Any]:
                 "beamwidth_deg": getattr(tower, "beamwidth_deg", 10.0),
                 "max_gain_db": getattr(tower, "max_gain_db", 0.0),
                 "coverage_radius_m": getattr(tower, "coverage_radius_m", 5.0),
+                "num_elements": getattr(tower, "num_elements", None),
+                "frequency": getattr(tower, "frequency", None),
             }
             for tower in result.towers
         ],
+
         "users": [
             {
                 "id": user.id,

@@ -10,6 +10,7 @@ import {
 } from "recharts";
 import BeamPlot from "@/components/BeamPlot";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import TowerConfigPopup, { TowerParams } from "@/components/TowerConfigPopup";
 import "./Simulator5G.css";
 
 // ─── World-space bounds for user movement ────────────────────────────────────
@@ -47,6 +48,14 @@ const TOWER_COLORS: Record<number, { hue: number; name: string }> = {
 };
 const DEFAULT_TOWER_HUE = 270; // fallback if id not in palette
 
+// ─── Unique color per user (for element-subset coloring) ─────────────────────
+const USER_COLORS: Record<number, { hue: number; name: string }> = {
+  101: { hue: 340, name: "Rose"    }, // User 101 → rose/pink
+  102: { hue: 150, name: "Green"   }, // User 102 → emerald green
+};
+const DEFAULT_USER_HUE = 340;
+
+
 const defaultParams: BeamformingParams & Record<string, any> = {
   numElements: 16,
   spacing: 0.5,
@@ -68,8 +77,19 @@ export default function Simulator5G() {
 
   // ─── Local user / tower state (drives both canvas and API) ───────────────
   const [localUsers, setLocalUsers] = useState(DEFAULT_USERS.map(u => ({ ...u })));
-  const [localTowers] = useState(DEFAULT_TOWERS.map(t => ({ ...t })));
-  const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
+  // Extended tower state: positions + per-tower params
+  const [localTowers, setLocalTowers] = useState<TowerParams[]>(
+    DEFAULT_TOWERS.map(t => ({
+      ...t,
+      coverage_radius_m: 5.0,
+      num_elements: 16,
+      frequency: 28e9,
+    }))
+  );
+  const [selectedUserId, setSelectedUserId]   = useState<number | null>(null);
+  const [selectedTowerId, setSelectedTowerId] = useState<number | null>(null);
+  // Canvas-space anchor for tower popup (in viewport px)
+  const [towerPopupAnchor, setTowerPopupAnchor] = useState<{ x: number; y: number } | null>(null);
 
   // ─── Handoff state: {userId: towerId} – updated from API, sent back for hysteresis
   const [currentConnections, setCurrentConnections] = useState<Record<number, number>>({});
@@ -223,6 +243,23 @@ export default function Simulator5G() {
     [result?.data]
   );
 
+  // {towerId: [{user_id, num_elements, element_start, element_end, angle_deg, fraction}]}
+  const elementAllocsByTowerId = useMemo(() => {
+    const out = new Map<number, Array<{
+      user_id: number; num_elements: number;
+      element_start: number; element_end: number;
+      angle_deg: number; fraction: number;
+    }>>();
+    for (const bp of (fiveG?.beamPatterns as any[] ?? [])) {
+      const tid = Number(bp.tower_id ?? bp.towerId ?? 0);
+      const allocs = bp.element_allocations ?? bp.elementAllocations ?? [];
+      out.set(tid, allocs);
+    }
+    return out;
+  }, [fiveG?.beamPatterns]);
+
+
+
   // ─── Canvas coordinate helpers ────────────────────────────────────────────
   const CANVAS_W = canvasSize.width;
   const CANVAS_H = canvasSize.height;
@@ -320,7 +357,7 @@ export default function Simulator5G() {
   const PULSE_SPACING_PX = 68;
   const PULSE_SPEED_PX_PER_SEC = 170;
 
-  // ─── Canvas click → select user ───────────────────────────────────────────
+  // ─── Canvas click → select tower (priority) or user ─────────────────────
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -330,18 +367,52 @@ export default function Simulator5G() {
     const cx = (e.clientX - rect.left) * scaleX;
     const cy = (e.clientY - rect.top)  * scaleY;
 
-    // Find nearest user within 14px
-    let bestId: number | null = null;
-    let bestDist = 14;
+    // 1. Check towers first (click radius = 18px for the triangle icon)
+    let bestTowerId: number | null = null;
+    let bestTowerDist = 18;
+    for (const t of localTowers) {
+      const tx = toCanvasX(t.x);
+      const ty = toCanvasY(t.y);
+      const dist = Math.hypot(cx - tx, cy - ty);
+      if (dist < bestTowerDist) { bestTowerDist = dist; bestTowerId = t.id; }
+    }
+
+    if (bestTowerId !== null) {
+      setSelectedTowerId(bestTowerId);
+      setSelectedUserId(null);
+      // Anchor popup to viewport coordinates of the tower icon
+      const clickedTower = localTowers.find(t => t.id === bestTowerId)!;
+      const tx = toCanvasX(clickedTower.x);
+      const ty = toCanvasY(clickedTower.y);
+      // Convert canvas-space tx,ty to viewport pixels
+      const vpX = rect.left + (tx / CANVAS_W) * rect.width;
+      const vpY = rect.top  + (ty / CANVAS_H) * rect.height - 14;
+      setTowerPopupAnchor({ x: vpX, y: vpY });
+      return;
+    }
+
+    // 2. Check users (click radius = 14px)
+    let bestUserId: number | null = null;
+    let bestUserDist = 14;
     for (const u of localUsers) {
       const ux = toCanvasX(u.x);
       const uy = toCanvasY(u.y);
       const dist = Math.hypot(cx - ux, cy - uy);
-      if (dist < bestDist) { bestDist = dist; bestId = u.id; }
+      if (dist < bestUserDist) { bestUserDist = dist; bestUserId = u.id; }
     }
-    setSelectedUserId(bestId ?? (selectedUserId === null ? null : null));
-    if (bestId === null) setSelectedUserId(null); // click on empty space deselects
-  }, [localUsers, selectedUserId]);
+
+    if (bestUserId !== null) {
+      setSelectedUserId(bestUserId);
+      setSelectedTowerId(null);
+      setTowerPopupAnchor(null);
+    } else {
+      // Click on empty space → deselect everything
+      setSelectedUserId(null);
+      setSelectedTowerId(null);
+      setTowerPopupAnchor(null);
+    }
+  }, [localUsers, localTowers, toCanvasX, toCanvasY, CANVAS_W, CANVAS_H]);
+
 
   // ─── Canvas drawing (continuous animated beams) ─────────────────────────
   useEffect(() => {
@@ -512,12 +583,57 @@ export default function Simulator5G() {
           ctx.stroke();
         }
 
-        // Element dots
-        for (const e of elements) {
-          ctx.fillStyle = `hsla(${hue},80%,70%,0.9)`;
+        // Element dots — colored by user allocation when multiple users share this tower
+        const allocs = elementAllocsByTowerId.get(tower.id) ?? [];
+        const hasAllocations = allocs.length > 1; // only split when 2+ users share tower
+
+        for (let ei = 0; ei < elements.length; ei++) {
+          const e = elements[ei];
+
+          // Find which user this element index belongs to
+          let dotHue = hue; // default: tower color
+          let dotAlpha = 0.9;
+          if (hasAllocations) {
+            const alloc = allocs.find(a => ei >= a.element_start && ei < a.element_end);
+            if (alloc) {
+              dotHue   = USER_COLORS[alloc.user_id]?.hue ?? DEFAULT_USER_HUE;
+              dotAlpha = 1.0;
+            }
+          }
+
+          ctx.fillStyle = `hsla(${dotHue},85%,72%,${dotAlpha})`;
           ctx.beginPath();
-          ctx.arc(e.x, e.y, 2.1, 0, Math.PI * 2);
+          ctx.arc(e.x, e.y, hasAllocations ? 2.5 : 2.1, 0, Math.PI * 2);
           ctx.fill();
+
+          // Draw a faint separator line between sub-array groups
+          if (hasAllocations && allocs.some(a => a.element_start === ei && ei > 0)) {
+            const prev = elements[ei - 1];
+            const mpX = (e.x + prev.x) / 2;
+            const mpY = (e.y + prev.y) / 2;
+            ctx.strokeStyle = "hsla(0,0%,100%,0.35)";
+            ctx.lineWidth = 1;
+            const perpX = (e.y - prev.y);
+            const perpY = -(e.x - prev.x);
+            const pLen = Math.hypot(perpX, perpY) || 1;
+            ctx.beginPath();
+            ctx.moveTo(mpX + (perpX / pLen) * 5, mpY + (perpY / pLen) * 5);
+            ctx.lineTo(mpX - (perpX / pLen) * 5, mpY - (perpY / pLen) * 5);
+            ctx.stroke();
+          }
+        }
+
+        // Compute per-alloc sub-array centroid for beam origin (used later in beam-line pass)
+        const subArrayCenterByUserId = new Map<number, {x: number; y:number}>();
+        if (hasAllocations) {
+          for (const alloc of allocs) {
+            const slice = elements.slice(alloc.element_start, alloc.element_end);
+            if (slice.length === 0) continue;
+            subArrayCenterByUserId.set(alloc.user_id, {
+              x: slice.reduce((s, p) => s + p.x, 0) / slice.length,
+              y: slice.reduce((s, p) => s + p.y, 0) / slice.length,
+            });
+          }
         }
 
         towerElementsById.set(tower.id, elements);
@@ -525,6 +641,10 @@ export default function Simulator5G() {
           x: elements.reduce((s, p) => s + p.x, 0) / Math.max(1, elements.length),
           y: elements.reduce((s, p) => s + p.y, 0) / Math.max(1, elements.length),
         });
+        // Store sub-array centers keyed as "towerId:userId"
+        for (const [uid, center] of subArrayCenterByUserId) {
+          towerArrayCenterById.set(Number(`${tower.id}0000${uid}`), center);
+        }
       }
 
       // Connected beam lines with moving dashes and traveling pulse dots
@@ -538,7 +658,10 @@ export default function Simulator5G() {
         const tower = localTowers.find((t) => t.id === connTowId);
         if (!tower) continue;
 
-        const towerCenter = towerArrayCenterById.get(connTowId);
+        // Use sub-array centroid if this tower splits elements; else full array center
+        const subKey = Number(`${connTowId}0000${user.id}`);
+        const subCenter = towerArrayCenterById.get(subKey);
+        const towerCenter = subCenter ?? towerArrayCenterById.get(connTowId);
         const tx = towerCenter?.x ?? toCanvasX(tower.x);
         const ty = towerCenter?.y ?? toCanvasY(tower.y);
         const ux = toCanvasX(user.x), uy = toCanvasY(user.y);
@@ -640,6 +763,39 @@ export default function Simulator5G() {
         const tx = toCanvasX(tower.x), ty = toCanvasY(tower.y);
         const hue = TOWER_COLORS[tower.id]?.hue ?? DEFAULT_TOWER_HUE;
 
+        // Pick nearest connected user for this tower (if multiple users attach to same tower).
+        let connectedUser: (typeof localUsers)[number] | null = null;
+        let bestDist = Number.POSITIVE_INFINITY;
+        for (const u of localUsers) {
+          const connTowId = effectiveConnectedTowerByUserId.get(u.id) ?? null;
+          if (connTowId !== tower.id) continue;
+          const d = Math.hypot(u.x - tower.x, u.y - tower.y);
+          if (d < bestDist) {
+            bestDist = d;
+            connectedUser = u;
+          }
+        }
+
+        // Build telemetry label — show per-user element allocation when tower is shared
+        const towerAllocs = elementAllocsByTowerId.get(tower.id) ?? [];
+        let statusLine1: string;
+        let statusLine2: string | null = null;
+
+        if (towerAllocs.length >= 2) {
+          // Multi-user: show element split
+          statusLine1 = towerAllocs
+            .map(a => `${a.num_elements}→U${a.user_id}`)
+            .join(" + ");
+          statusLine2 = `Total: ${towerAllocs.reduce((s, a) => s + a.num_elements, 0)} elem`;
+        } else if (connectedUser) {
+          const thetaRad = Math.atan2(connectedUser.x - tower.x, connectedUser.y - tower.y);
+          statusLine1 = `θ ${((thetaRad * 180) / Math.PI).toFixed(1)}°`;
+          const deltaPhiRad = 2 * Math.PI * spacingLambda * Math.sin(thetaRad);
+          statusLine2 = `Δφ ${deltaPhiRad.toFixed(2)} rad`;
+        } else {
+          statusLine1 = "No user";
+        }
+
         ctx.fillStyle = `hsl(${hue},70%,55%)`;
         ctx.strokeStyle = `hsl(${hue},70%,80%)`;
         ctx.lineWidth = 1;
@@ -655,6 +811,34 @@ export default function Simulator5G() {
         ctx.font = "bold 10px JetBrains Mono, monospace";
         ctx.textAlign = "center";
         ctx.fillText(`T${tower.id}`, tx, ty + 22);
+
+        // Live tower telemetry label: steering angle and phase shift toward connected user.
+        ctx.font = "8px JetBrains Mono, monospace";
+        const lines = statusLine2 ? [statusLine1, statusLine2] : [statusLine1];
+        const lineHeight = 10;
+        const padX = 6;
+        const padY = 4;
+        let labelWidth = 0;
+        for (const line of lines) {
+          labelWidth = Math.max(labelWidth, ctx.measureText(line).width);
+        }
+
+        const boxW = Math.ceil(labelWidth + padX * 2);
+        const boxH = Math.ceil(lines.length * lineHeight + padY * 2);
+        const boxX = tx + 13;
+        const boxY = ty - 16 - boxH;
+
+        ctx.fillStyle = `hsla(${hue},35%,10%,0.82)`;
+        ctx.strokeStyle = `hsla(${hue},70%,65%,0.65)`;
+        ctx.lineWidth = 1;
+        ctx.fillRect(boxX, boxY, boxW, boxH);
+        ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+        ctx.textAlign = "left";
+        ctx.fillStyle = connectedUser ? `hsla(${hue},85%,82%,0.95)` : "hsla(0,0%,85%,0.95)";
+        for (let i = 0; i < lines.length; i++) {
+          ctx.fillText(lines[i], boxX + padX, boxY + padY + (i + 1) * lineHeight - 2);
+        }
       }
 
       // User markers
@@ -736,7 +920,9 @@ export default function Simulator5G() {
     localUsers,
     localTowers,
     selectedUserId,
+    selectedTowerId,
     fiveG,
+    elementAllocsByTowerId,
     currentConnections,
     effectiveConnectedTowerByUserId,
     towerCoverageRadiusByTowerId,
@@ -753,6 +939,38 @@ export default function Simulator5G() {
     params.spacing,
     params.radius,
   ]);
+
+
+  // ─── Tower param change → update state + re-simulate ─────────────────────
+  const handleTowerParamChange = useCallback((updated: TowerParams) => {
+    setLocalTowers(prev => prev.map(t => t.id === updated.id ? updated : t));
+    // Trigger re-simulation with short debounce (done via useEffect on localTowers)
+  }, []);
+
+  // Escape key closes tower popup
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSelectedTowerId(null);
+        setTowerPopupAnchor(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Re-run simulation whenever localTowers params change
+  const localTowersRef = useRef(localTowers);
+  localTowersRef.current = localTowers;
+  useEffect(() => {
+    // Small delay so rapid slider drags are batched
+    const t = setTimeout(() =>
+      runSimulation(debouncedParams, localUsersRef.current, localTowersRef.current),
+      80
+    );
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localTowers]);
 
 
 
@@ -905,7 +1123,13 @@ export default function Simulator5G() {
               className={`simulator-canvas absolute inset-0 w-full h-full rounded-lg cursor-pointer ${
                 isInitialLoadRef.current ? "loading" : "ready"
               }`}
-              style={{ outline: selectedUserId !== null ? "1px solid hsla(45,80%,55%,0.4)" : "none" }}
+              style={{
+                outline: selectedTowerId !== null
+                  ? `1px solid hsla(${TOWER_COLORS[selectedTowerId]?.hue ?? 270},70%,55%,0.55)`
+                  : selectedUserId !== null
+                  ? "1px solid hsla(45,80%,55%,0.4)"
+                  : "none"
+              }}
             />
             {isInitialLoadRef.current && (
               <div className="absolute text-center">
@@ -915,6 +1139,24 @@ export default function Simulator5G() {
             )}
           </div>
         </div>
+
+        {/* ── Tower Config Popup (rendered outside canvas flow, fixed position) ── */}
+        {selectedTowerId !== null && towerPopupAnchor !== null && (() => {
+          const tow = localTowers.find(t => t.id === selectedTowerId);
+          if (!tow) return null;
+          const color = TOWER_COLORS[selectedTowerId];
+          return (
+            <TowerConfigPopup
+              key={selectedTowerId}
+              tower={tow}
+              towerHue={color?.hue ?? DEFAULT_TOWER_HUE}
+              towerName={color?.name ?? `Tower ${selectedTowerId}`}
+              anchorPx={towerPopupAnchor}
+              onClose={() => { setSelectedTowerId(null); setTowerPopupAnchor(null); }}
+              onChange={handleTowerParamChange}
+            />
+          );
+        })()}
 
         {/* ── Signal Strength per User ─────────────────────────────────── */}
         <div className="glass-panel p-3 flex flex-col">

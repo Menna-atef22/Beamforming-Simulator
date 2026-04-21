@@ -233,10 +233,13 @@ class UserPositionSchema(BaseModel):
 
 
 class TowerPositionSchema(BaseModel):
-    """Tower position override for 5G simulation"""
+    """Tower position + per-tower parameter overrides for 5G simulation"""
     id: int
     x: float
     y: float
+    num_elements: Optional[int] = Field(default=None, ge=4, le=64, description="Per-tower element count")
+    frequency: Optional[float] = Field(default=None, gt=0, description="Per-tower frequency in Hz")
+    coverage_radius_m: Optional[float] = Field(default=None, gt=0, le=20, description="Per-tower coverage radius in m")
 
 
 class FiveGParamsSchema(BaseModel):
