@@ -1,9 +1,19 @@
 import { useMemo } from "react";
 
+interface PolarSeries {
+  id?: number | string;
+  angles: number[];
+  magnitudes: number[];
+  magnitudesDb?: number[];
+  color?: string;
+  label?: string;
+}
+
 interface PolarPlotProps {
   angles: number[];
   magnitudes: number[];
   magnitudesDb?: number[];
+  series?: PolarSeries[];
   useDb?: boolean;
   title?: string;
 }
@@ -12,6 +22,7 @@ export default function PolarPlot({
   angles,
   magnitudes,
   magnitudesDb,
+  series,
   useDb = false,
   title = "Polar Plot",
 }: PolarPlotProps) {
@@ -21,50 +32,54 @@ export default function PolarPlot({
   const DB_MIN = -40;
   const DB_MAX = 0;
 
-  const plotData = useMemo(() => {
-    const mags = useDb && magnitudesDb ? magnitudesDb : magnitudes;
-    
-    // Normalize magnitudes to 0-1
-    let normalized: number[];
-    if (useDb && magnitudesDb) {
-      // For dB values: -40 dB → 0, 0 dB → 1
-      normalized = magnitudesDb.map((db) => Math.max(0, Math.min(1, (db - DB_MIN) / (DB_MAX - DB_MIN))));
-    } else {
-      // For linear magnitudes
-      const maxMag = Math.max(...magnitudes);
-      normalized = magnitudes.map((m) => (maxMag > 0 ? m / maxMag : 0));
-    }
-
-    return { normalized, mags };
-  }, [magnitudes, magnitudesDb, useDb]);
-
-  const polarToCartesian = (angleDeg: number, radiusNorm: number) => {
+  function polarToCartesian(angleDeg: number, radiusNorm: number) {
     const angleRad = ((90 - angleDeg) * Math.PI) / 180;
     const r = radiusNorm * MAX_RADIUS;
     const x = CENTER + r * Math.cos(angleRad);
     const y = CENTER - r * Math.sin(angleRad);
-    return [x, y];
-  };
+    return [x, y] as const;
+  }
 
-  // Generate SVG path for beam pattern
-  const beamPath = useMemo(() => {
-    if (angles.length === 0) return "";
-    
-    const points = angles.map((angle, i) => {
-      const radius = plotData.normalized[i];
-      return polarToCartesian(angle, radius);
-    });
+  const normalizedSeries = useMemo(() => {
+    const source = series && series.length > 0
+      ? series
+      : [{ id: "single", angles, magnitudes, magnitudesDb, color: "#b466ff", label: "Beam" }];
 
-    if (points.length === 0) return "";
-    
-    let pathData = `M ${points[0][0]} ${points[0][1]}`;
-    for (let i = 1; i < points.length; i++) {
-      pathData += ` L ${points[i][0]} ${points[i][1]}`;
-    }
-    pathData += ` Z`;
-    
-    return pathData;
-  }, [angles, plotData]);
+    return source.map((s, idx) => {
+      const sAngles = s.angles ?? [];
+      const sMagnitudes = s.magnitudes ?? [];
+      const sMagnitudesDb = s.magnitudesDb;
+
+      let normalized: number[];
+      if (useDb && sMagnitudesDb && sMagnitudesDb.length > 0) {
+        normalized = sMagnitudesDb.map((db) => Math.max(0, Math.min(1, (db - DB_MIN) / (DB_MAX - DB_MIN))));
+      } else {
+        const maxMag = Math.max(0, ...sMagnitudes);
+        normalized = sMagnitudes.map((m) => (maxMag > 0 ? m / maxMag : 0));
+      }
+
+      const points = sAngles.map((angle, i) => {
+        const radius = normalized[i] ?? 0;
+        return polarToCartesian(angle, radius);
+      });
+
+      let path = "";
+      if (points.length > 0) {
+        path = `M ${points[0][0]} ${points[0][1]}`;
+        for (let i = 1; i < points.length; i++) {
+          path += ` L ${points[i][0]} ${points[i][1]}`;
+        }
+        path += " Z";
+      }
+
+      return {
+        id: s.id ?? idx,
+        path,
+        color: s.color ?? "#b466ff",
+        label: s.label,
+      };
+    }).filter((s) => s.path.length > 0);
+  }, [angles, magnitudes, magnitudesDb, series, useDb]);
 
   return (
     <div className="glass-panel p-3 flex flex-col h-full">
@@ -144,14 +159,32 @@ export default function PolarPlot({
             );
           })}
 
-          {/* Beam pattern polygon */}
-          {beamPath && (
-            <>
-              <path d={beamPath} fill="#b466ff" fillOpacity="0.2" stroke="#b466ff" strokeWidth="2" />
-            </>
-          )}
+          {/* Beam pattern polygons */}
+          {normalizedSeries.map((s) => (
+            <path
+              key={`beam-${s.id}`}
+              d={s.path}
+              fill={s.color}
+              fillOpacity="0.14"
+              stroke={s.color}
+              strokeWidth="2"
+            />
+          ))}
         </svg>
       </div>
+      {normalizedSeries.length > 1 && (
+        <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+          {normalizedSeries.map((s) => (
+            <span
+              key={`legend-${s.id}`}
+              className="text-[9px] font-mono px-1.5 py-0.5 rounded border"
+              style={{ borderColor: s.color, color: s.color, backgroundColor: "hsla(240,10%,15%,0.55)" }}
+            >
+              {s.label ?? `Beam ${s.id}`}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,5 +1,4 @@
 .simulator-canvas {
-  aspect-ratio: 1;
   transition: opacity 0.3s ease;
   cursor: crosshair;
 }

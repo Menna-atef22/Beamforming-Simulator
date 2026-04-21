@@ -13,21 +13,29 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import "./Simulator5G.css";
 
 // ─── World-space bounds for user movement ────────────────────────────────────
-const WORLD_MIN_X = -4.5;
-const WORLD_MAX_X = 4.5;
+const WORLD_MIN_X = -14.0;
+const WORLD_MAX_X = 14.0;
 const WORLD_MIN_Y = 0.2;
-const WORLD_MAX_Y = 7.5;
+const WORLD_MAX_Y = 10.5;
 const STEP = 0.25; // metres per key press
+const MIN_COVERAGE_RADIUS_RATIO = 0.22;
+
+// Convert canvas percentage anchors to world coordinates (y% measured from top of canvas).
+const fromCanvasPercent = (px: number, py: number) => {
+  const x = WORLD_MIN_X + (px / 100) * (WORLD_MAX_X - WORLD_MIN_X);
+  const y = WORLD_MIN_Y + (1 - py / 100) * (WORLD_MAX_Y - WORLD_MIN_Y);
+  return { x, y };
+};
 
 // ─── Default positions (keep in sync with backend _setup_default_network) ────
 const DEFAULT_TOWERS = [
-  { id: 1, x: -3.0, y: 0.0 },
-  { id: 2, x:  0.0, y: 0.0 },
-  { id: 3, x:  3.0, y: 0.0 },
+  { id: 1, ...fromCanvasPercent(10, 80) },
+  { id: 2, ...fromCanvasPercent(50, 84) },
+  { id: 3, ...fromCanvasPercent(90, 80) },
 ];
 const DEFAULT_USERS = [
-  { id: 101, x:  1.0, y: 3.0 },
-  { id: 102, x: -2.0, y: 4.0 },
+  { id: 101, ...fromCanvasPercent(35, 40) },
+  { id: 102, ...fromCanvasPercent(65, 40) },
 ];
 
 // ─── Unique color per tower (hue, saturation%, lightness%) ───────────────────
@@ -73,6 +81,31 @@ export default function Simulator5G() {
   const [isLoading, setIsLoading] = useState(true);
   const { simulate, error } = use5GSimulatorAPI();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 520, height: 520 });
+
+  useEffect(() => {
+    const container = canvasContainerRef.current;
+    if (!container) return;
+
+    const updateSize = () => {
+      const rect = container.getBoundingClientRect();
+      const width = Math.max(1, Math.floor(rect.width));
+      const height = Math.max(1, Math.floor(rect.height));
+      setCanvasSize((prev) => (prev.width === width && prev.height === height ? prev : { width, height }));
+    };
+
+    updateSize();
+
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateSize) : null;
+    ro?.observe(container);
+    window.addEventListener("resize", updateSize);
+
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", updateSize);
+    };
+  }, []);
 
   // ─── Run simulation whenever debounced params OR user positions change ────
   const runSimulation = useCallback(async (
@@ -97,9 +130,19 @@ export default function Simulator5G() {
         isInitialLoadRef.current = false;
         // Update local connection map from API response
         const newConns: Record<number, number> = {};
+        const minCoverageRadiusM = (WORLD_MAX_X - WORLD_MIN_X) * MIN_COVERAGE_RADIUS_RATIO;
+        const towerById = new Map<number, any>((res.data?.towers ?? []).map((t: any) => [t.id, t]));
         for (const u of (res.data?.users ?? [])) {
-          if ((u as any).connected_tower_id != null) {
-            newConns[u.id] = (u as any).connected_tower_id;
+          const connTowId = (u as any).connected_tower_id;
+          if (connTowId == null) continue;
+          const tower = towerById.get(connTowId);
+          if (!tower) continue;
+
+          const radiusM = Math.max(((tower as any).coverage_radius_m ?? 4.5), minCoverageRadiusM);
+          const dx = (u as any).x - (tower as any).x;
+          const dy = (u as any).y - (tower as any).y;
+          if (Math.hypot(dx, dy) <= radiusM) {
+            newConns[u.id] = connTowId;
           }
         }
         setCurrentConnections(newConns);
@@ -173,6 +216,7 @@ export default function Simulator5G() {
       ? {
           towers:      result.data.towers      || [],
           users:       result.data.users       || [],
+          connectivityMap: result.data.connectivityMap || [],
           beamPatterns: result.data.beamPatterns || [],
         }
       : null,
@@ -180,11 +224,94 @@ export default function Simulator5G() {
   );
 
   // ─── Canvas coordinate helpers ────────────────────────────────────────────
-  const CANVAS_W = 400;
-  const CANVAS_H = 400;
-  // Map world [-5, 5] x [0, 8] → canvas [0, 400]
-  const toCanvasX = (x: number) => ((x + 5) / 10) * CANVAS_W;
-  const toCanvasY = (y: number) => CANVAS_H - (y / 8) * CANVAS_H;
+  const CANVAS_W = canvasSize.width;
+  const CANVAS_H = canvasSize.height;
+
+  const towerCoverageRadiusByTowerId = useMemo(() => {
+    const minCoverageRadiusM = (WORLD_MAX_X - WORLD_MIN_X) * MIN_COVERAGE_RADIUS_RATIO;
+    const apiTowerById = new Map<number, any>((fiveG?.towers ?? []).map((t: any) => [t.id, t]));
+    const radiusById = new Map<number, number>();
+
+    for (const tower of localTowers) {
+      const apiTower = apiTowerById.get(tower.id);
+      const radiusM = Math.max(((apiTower as any)?.coverage_radius_m ?? 4.5), minCoverageRadiusM);
+      radiusById.set(tower.id, radiusM);
+    }
+
+    return radiusById;
+  }, [fiveG?.towers, localTowers]);
+
+  const effectiveConnectedTowerByUserId = useMemo(() => {
+    const connectedByApi = new Map<number, number>();
+    for (const u of fiveG?.users ?? []) {
+      const connTowId = (u as any).connected_tower_id ?? (u as any).connectedTowerId;
+      if (connTowId != null) connectedByApi.set(u.id, connTowId);
+    }
+
+    const towerById = new Map<number, { id: number; x: number; y: number }>(localTowers.map((t) => [t.id, t]));
+    const effective = new Map<number, number>();
+
+    for (const user of localUsers) {
+      const candidateTowerId = connectedByApi.get(user.id) ?? currentConnections[user.id] ?? null;
+      if (candidateTowerId == null) continue;
+
+      const tower = towerById.get(candidateTowerId);
+      if (!tower) continue;
+
+      const radiusM = towerCoverageRadiusByTowerId.get(candidateTowerId) ?? 4.5;
+      const d = Math.hypot(user.x - tower.x, user.y - tower.y);
+      if (d <= radiusM) {
+        effective.set(user.id, candidateTowerId);
+      }
+    }
+
+    return effective;
+  }, [fiveG?.users, localUsers, localTowers, currentConnections, towerCoverageRadiusByTowerId]);
+
+  // Radius-aware viewport fit so all towers and coverage circles remain fully visible.
+  const mapViewport = useMemo(() => {
+    let minX = WORLD_MIN_X;
+    let maxX = WORLD_MAX_X;
+    let minY = WORLD_MIN_Y;
+    let maxY = WORLD_MAX_Y;
+
+    for (const t of localTowers) {
+      const radiusM = towerCoverageRadiusByTowerId.get(t.id) ?? 4.5;
+      minX = Math.min(minX, t.x - radiusM);
+      maxX = Math.max(maxX, t.x + radiusM);
+      minY = Math.min(minY, t.y - radiusM);
+      maxY = Math.max(maxY, t.y + radiusM);
+    }
+
+    for (const u of localUsers) {
+      minX = Math.min(minX, u.x);
+      maxX = Math.max(maxX, u.x);
+      minY = Math.min(minY, u.y);
+      maxY = Math.max(maxY, u.y);
+    }
+
+    const spanX = Math.max(1, maxX - minX);
+    const spanY = Math.max(1, maxY - minY);
+    const padX = Math.max(0.6, spanX * 0.06);
+    const padY = Math.max(0.6, spanY * 0.06);
+
+    return {
+      minX: minX - padX,
+      maxX: maxX + padX,
+      minY: minY - padY,
+      maxY: maxY + padY,
+    };
+  }, [towerCoverageRadiusByTowerId, localTowers, localUsers]);
+
+  const toCanvasX = useCallback((x: number) => {
+    const spanX = Math.max(1e-6, mapViewport.maxX - mapViewport.minX);
+    return ((x - mapViewport.minX) / spanX) * CANVAS_W;
+  }, [mapViewport]);
+
+  const toCanvasY = useCallback((y: number) => {
+    const spanY = Math.max(1e-6, mapViewport.maxY - mapViewport.minY);
+    return CANVAS_H - ((y - mapViewport.minY) / spanY) * CANVAS_H;
+  }, [mapViewport]);
 
   // Beam wave animation tuning
   const DASH_LENGTH_PX = 14;
@@ -227,15 +354,10 @@ export default function Simulator5G() {
     canvas.height = CANVAS_H;
 
     const apiTowerById = new Map<number, any>((fiveG?.towers ?? []).map((t: any) => [t.id, t]));
-    const connectedTowerByUserId = new Map<number, number>();
-    for (const u of fiveG?.users ?? []) {
-      if ((u as any).connected_tower_id != null) {
-        connectedTowerByUserId.set(u.id, (u as any).connected_tower_id);
-      }
-    }
+    const drawCoverageRadiusByTowerId = towerCoverageRadiusByTowerId;
 
-    const mToPxX = CANVAS_W / 10;
-    const mToPxY = CANVAS_H / 8;
+    const mToPxX = CANVAS_W / Math.max(1e-6, (mapViewport.maxX - mapViewport.minX));
+    const mToPxY = CANVAS_H / Math.max(1e-6, (mapViewport.maxY - mapViewport.minY));
     const mToPx = (mToPxX + mToPxY) / 2;
     const arrayGeometry = (params.geometry ?? "linear") as "linear" | "curved";
     const elementCount = Math.max(2, Math.min(64, Math.round(Number(params.numElements ?? 16))));
@@ -261,8 +383,7 @@ export default function Simulator5G() {
       // Coverage circles
       for (const tower of localTowers) {
         const tx = toCanvasX(tower.x), ty = toCanvasY(tower.y);
-        const apiTower = apiTowerById.get(tower.id);
-        const radiusM = (apiTower as any)?.coverage_radius_m ?? 4.5;
+        const radiusM = drawCoverageRadiusByTowerId.get(tower.id) ?? 4.5;
         const radiusPx = radiusM * mToPx;
         const hue = TOWER_COLORS[tower.id]?.hue ?? DEFAULT_TOWER_HUE;
 
@@ -299,21 +420,21 @@ export default function Simulator5G() {
         const ty = toCanvasY(tower.y);
         const hue = TOWER_COLORS[tower.id]?.hue ?? DEFAULT_TOWER_HUE;
 
-        const baseY = ty + 11;
-        // Left panel spacing is d/lambda, so convert to physical spacing for rendering.
-        const requestedSpacingPx = physicalSpacingMeters * mToPx * 0.34;
-        const maxArraySpanPx = 76;
-        const spacingPx = Math.max(
-          3,
-          Math.min(requestedSpacingPx, maxArraySpanPx / Math.max(1, elementCount - 1))
-        );
+        // Keep aperture centered at the tower point.
+        const baseY = ty;
+
+        // Scale aperture from physical spacing x (N-1), with a strict safety cap.
+        // Keep dotted element line clearly shorter than tower-to-tower spacing.
+        const desiredAperturePx = physicalSpacingMeters * Math.max(1, elementCount - 1) * mToPx * 0.45;
+        const aperturePx = Math.max(8, Math.min(desiredAperturePx, CANVAS_W * 0.18));
+        const spacingPx = elementCount > 1 ? (aperturePx / (elementCount - 1)) : 0;
 
         const elements: Array<{ x: number; y: number }> = [];
 
         if (arrayGeometry === "curved") {
           const curvatureInput = Number(params.radius ?? 1.4);
-          const arcRadius = Math.max(22, Math.min(52, 18 + curvatureInput * 12));
-          const totalSweep = Math.min(Math.PI * 0.92, ((elementCount - 1) * spacingPx) / arcRadius);
+          const arcRadius = Math.max(18, Math.min(52, 12 + curvatureInput * 10));
+          const totalSweep = Math.min(Math.PI * 0.96, (aperturePx / Math.max(1, arcRadius)));
           const centerX = tx;
           const centerY = baseY + arcRadius;
           const a0 = -totalSweep / 2;
@@ -338,18 +459,56 @@ export default function Simulator5G() {
           }
           ctx.stroke();
         } else {
-          const span = spacingPx * (elementCount - 1);
-          const startX = tx - span / 2;
+          // Linear aperture is centered at tower and oriented perpendicular to beam direction.
+          const connectedUsersForTower = localUsers.filter((u) => {
+            const connTowId = effectiveConnectedTowerByUserId.get(u.id) ?? null;
+            return connTowId === tower.id;
+          });
+
+          let beamDirX = 0;
+          let beamDirY = -1;
+          if (connectedUsersForTower.length > 0) {
+            for (const u of connectedUsersForTower) {
+              const ux = toCanvasX(u.x);
+              const uy = toCanvasY(u.y);
+              const dx = ux - tx;
+              const dy = uy - ty;
+              const mag = Math.hypot(dx, dy);
+              if (mag > 1e-6) {
+                beamDirX += dx / mag;
+                beamDirY += dy / mag;
+              }
+            }
+            const meanMag = Math.hypot(beamDirX, beamDirY);
+            if (meanMag > 1e-6) {
+              beamDirX /= meanMag;
+              beamDirY /= meanMag;
+            } else {
+              beamDirX = 0;
+              beamDirY = -1;
+            }
+          }
+
+          // Aperture axis = beam axis rotated +90° (perpendicular line through tower center).
+          const axisX = -beamDirY;
+          const axisY = beamDirX;
+          const centerOffset = (elementCount - 1) / 2;
           for (let i = 0; i < elementCount; i++) {
-            elements.push({ x: startX + i * spacingPx, y: baseY });
+            const offset = (i - centerOffset) * spacingPx;
+            elements.push({
+              x: tx + axisX * offset,
+              y: baseY + axisY * offset,
+            });
           }
 
           // Faint linear support rail for the array
+          const start = elements[0];
+          const end = elements[elements.length - 1];
           ctx.strokeStyle = `hsla(${hue},65%,65%,0.22)`;
           ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.moveTo(startX, baseY);
-          ctx.lineTo(startX + span, baseY);
+          ctx.moveTo(start.x, start.y);
+          ctx.lineTo(end.x, end.y);
           ctx.stroke();
         }
 
@@ -357,7 +516,7 @@ export default function Simulator5G() {
         for (const e of elements) {
           ctx.fillStyle = `hsla(${hue},80%,70%,0.9)`;
           ctx.beginPath();
-          ctx.arc(e.x, e.y, 1.8, 0, Math.PI * 2);
+          ctx.arc(e.x, e.y, 2.1, 0, Math.PI * 2);
           ctx.fill();
         }
 
@@ -373,7 +532,7 @@ export default function Simulator5G() {
       const pulseTravel = ((timeMs / 1000) * PULSE_SPEED_PX_PER_SEC) % PULSE_SPACING_PX;
 
       for (const user of localUsers) {
-        const connTowId = connectedTowerByUserId.get(user.id) ?? currentConnections[user.id] ?? null;
+        const connTowId = effectiveConnectedTowerByUserId.get(user.id) ?? null;
         if (connTowId === null) continue;
 
         const tower = localTowers.find((t) => t.id === connTowId);
@@ -503,13 +662,12 @@ export default function Simulator5G() {
         const ux = toCanvasX(user.x), uy = toCanvasY(user.y);
         const isSelected = user.id === selectedUserId;
 
-        const connTowId = connectedTowerByUserId.get(user.id) ?? currentConnections[user.id] ?? null;
+        const connTowId = effectiveConnectedTowerByUserId.get(user.id) ?? null;
         const connHue = connTowId != null ? (TOWER_COLORS[connTowId]?.hue ?? DEFAULT_TOWER_HUE) : null;
         const connected = connTowId != null;
 
         const inRange = localTowers.some((tower) => {
-          const apiTower = apiTowerById.get(tower.id);
-          const radiusM = (apiTower as any)?.coverage_radius_m ?? 4.5;
+          const radiusM = drawCoverageRadiusByTowerId.get(tower.id) ?? ((apiTowerById.get(tower.id) as any)?.coverage_radius_m ?? 4.5);
           return Math.hypot(user.x - tower.x, user.y - tower.y) <= radiusM;
         });
 
@@ -539,14 +697,14 @@ export default function Simulator5G() {
           ? `hsl(${connHue ?? 45},90%,60%)`
           : connected
             ? `hsl(${connHue},68%,58%)`
-            : "hsl(320,60%,55%)";
+            : "hsl(0,0%,60%)";
         ctx.beginPath();
         ctx.arc(ux, uy, 7, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.fillStyle = isSelected
           ? `hsl(${connHue ?? 45},80%,88%)`
-          : connected ? `hsl(${connHue},65%,82%)` : "hsl(320,60%,85%)";
+          : connected ? `hsl(${connHue},65%,82%)` : "hsl(0,0%,82%)";
         ctx.font = "bold 10px JetBrains Mono, monospace";
         ctx.textAlign = "center";
         ctx.fillText(`U${user.id}`, ux, uy - 17);
@@ -557,9 +715,9 @@ export default function Simulator5G() {
           ctx.font = "8px JetBrains Mono, monospace";
           ctx.fillText(`→ T${connTowId} ${tName}`, ux, uy + 20);
         } else {
-          ctx.fillStyle = "hsla(0,65%,60%,0.6)";
+          ctx.fillStyle = "hsla(0,0%,78%,0.9)";
           ctx.font = "8px JetBrains Mono, monospace";
-          ctx.fillText("✖ no signal", ux, uy + 20);
+          ctx.fillText("No signal", ux, uy + 20);
         }
 
         if (isSelected) {
@@ -580,6 +738,9 @@ export default function Simulator5G() {
     selectedUserId,
     fiveG,
     currentConnections,
+    effectiveConnectedTowerByUserId,
+    towerCoverageRadiusByTowerId,
+    mapViewport,
     CANVAS_W,
     CANVAS_H,
     DASH_LENGTH_PX,
@@ -606,12 +767,67 @@ export default function Simulator5G() {
   }
 
   const userSignalData = useMemo(() =>
-    fiveG?.users.map((u: User) => ({
-      name: `User ${u.id}`,
-      signal: parseFloat(u.signal_strength.toFixed(3)),
-    })) ?? [],
-    [fiveG?.users]
+    {
+      const userById = new Map<number, any>((fiveG?.users ?? []).map((u: any) => [u.id, u]));
+      const signalByUserTower = new Map<string, number>();
+
+      for (const c of (fiveG?.connectivityMap as any[] ?? [])) {
+        const userId = (c as any).userId ?? (c as any).user_id;
+        const towerId = (c as any).towerId ?? (c as any).tower_id;
+        const signal = (c as any).signalStrength ?? (c as any).signal_strength ?? 0;
+        if (typeof userId === "number" && typeof towerId === "number") {
+          signalByUserTower.set(`${userId}:${towerId}`, Number(signal) || 0);
+        }
+      }
+
+      return localUsers.map((u) => {
+        const connectedTowerId = effectiveConnectedTowerByUserId.get(u.id) ?? null;
+        const connectedSignal = connectedTowerId != null
+          ? signalByUserTower.get(`${u.id}:${connectedTowerId}`)
+          : undefined;
+        const fallbackSignal = Number(
+          (userById.get(u.id) as any)?.signal_strength ??
+          (userById.get(u.id) as any)?.signalStrength ??
+          0
+        ) || 0;
+        const signal = connectedTowerId != null ? (connectedSignal ?? fallbackSignal) : 0;
+
+        return {
+          id: u.id,
+          name: `User ${u.id}`,
+          signal: parseFloat(signal.toFixed(3)),
+          connectedTowerId,
+        };
+      });
+    },
+    [fiveG?.users, fiveG?.connectivityMap, localUsers, effectiveConnectedTowerByUserId]
   );
+
+  const activeTowerIds = useMemo(() => new Set<number>(Array.from(effectiveConnectedTowerByUserId.values())), [effectiveConnectedTowerByUserId]);
+
+  const activeBeamSeries = useMemo(() => {
+    const rows = (result?.data?.beamPatterns ?? []).map((bp: any, idx: number) => {
+      const towerId = Number((bp as any).towerId ?? (bp as any).tower_id ?? idx + 1);
+      const angles = (bp as any).angles ?? [];
+      const magnitudes = (bp as any).magnitudes ?? [];
+      const magnitudesDb = (bp as any).magnitudesDb
+        ?? (bp as any).magnitudes_db
+        ?? magnitudes.map((m: number) => 20 * Math.log10(Math.max(m, 1e-6)));
+      const hue = TOWER_COLORS[towerId]?.hue ?? DEFAULT_TOWER_HUE;
+      const colorName = TOWER_COLORS[towerId]?.name ?? `Tower ${towerId}`;
+      return {
+        towerId,
+        angles,
+        magnitudes,
+        magnitudesDb,
+        color: `hsl(${hue},80%,62%)`,
+        label: `T${towerId} ${colorName}`,
+      };
+    }).filter((r) => r.angles.length > 0 && r.magnitudes.length > 0);
+
+    const activeRows = rows.filter((r) => activeTowerIds.has(r.towerId));
+    return (activeRows.length > 0 ? activeRows : rows).sort((a, b) => a.towerId - b.towerId);
+  }, [result?.data?.beamPatterns, activeTowerIds]);
 
   const distSignalData = useMemo(() =>
     (fiveG?.towers.flatMap((tower: Tower) =>
@@ -621,7 +837,7 @@ export default function Simulator5G() {
         const dist = Math.sqrt(dx * dx + dy * dy);
         return {
           distance: parseFloat(dist.toFixed(2)),
-          signal:   parseFloat((user.signal_strength / (fiveG?.towers.length ?? 1)).toFixed(3)),
+          signal:   parseFloat((((user as any).signalStrength ?? (user as any).signal_strength ?? 0) / (fiveG?.towers.length ?? 1)).toFixed(3)),
           label:    `T${tower.id}→U${user.id}`,
         };
       })
@@ -682,11 +898,11 @@ export default function Simulator5G() {
           </div>
 
 
-          <div className="flex-1 min-h-0 flex items-center justify-center relative">
+          <div ref={canvasContainerRef} className="flex-1 min-h-0 relative">
             <canvas
               ref={canvasRef}
               onClick={handleCanvasClick}
-              className={`simulator-canvas rounded-lg max-w-full max-h-full cursor-pointer ${
+              className={`simulator-canvas absolute inset-0 w-full h-full rounded-lg cursor-pointer ${
                 isInitialLoadRef.current ? "loading" : "ready"
               }`}
               style={{ outline: selectedUserId !== null ? "1px solid hsla(45,80%,55%,0.4)" : "none" }}
@@ -727,9 +943,9 @@ export default function Simulator5G() {
                       fill={
                         entry.name === `User ${selectedUserId}`
                           ? "hsl(45,90%,55%)"
-                          : i === 0
-                          ? "hsl(270,70%,50%)"
-                          : "hsl(320,70%,60%)"
+                          : entry.connectedTowerId != null
+                            ? `hsl(${TOWER_COLORS[entry.connectedTowerId]?.hue ?? DEFAULT_TOWER_HUE},70%,50%)`
+                            : "hsl(0,0%,55%)"
                       }
                     />
                   ))}
@@ -781,15 +997,23 @@ export default function Simulator5G() {
                 </div>
               </div>
             )}
-            {result?.data?.beamPatterns && result.data.beamPatterns.length > 0 ? (
+            {activeBeamSeries.length > 0 ? (
               <BeamPlot
                 beamPattern={{
-                  angles:       result.data.beamPatterns[0].angles     ?? [],
-                  magnitudes:   result.data.beamPatterns[0].magnitudes  ?? [],
-                  magnitudesDb: (result.data.beamPatterns[0].magnitudes ?? []).map(
+                  angles:       activeBeamSeries[0].angles,
+                  magnitudes:   activeBeamSeries[0].magnitudes,
+                  magnitudesDb: activeBeamSeries[0].magnitudesDb ?? activeBeamSeries[0].magnitudes.map(
                     m => 20 * Math.log10(Math.max(m, 1e-6))
                   ),
                 }}
+                beamPatterns={activeBeamSeries.map((s) => ({
+                  id: s.towerId,
+                  angles: s.angles,
+                  magnitudes: s.magnitudes,
+                  magnitudesDb: s.magnitudesDb,
+                  color: s.color,
+                  label: s.label,
+                }))}
                 title=""
               />
             ) : (
