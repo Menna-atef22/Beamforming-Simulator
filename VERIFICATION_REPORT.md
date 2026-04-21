@@ -244,6 +244,48 @@ frontend/src/
 
 ---
 
+## Fixes and Additions Required (Task 4 PDF + Hyperlink Topics)
+
+The checks above validate **OOP structure, imports, API contracts, and backend integration tests**.
+They do **not** guarantee compliance with the external assignment specification in **“Task 4 – Beamforming Simulator”**.
+
+### Hyperlink Topics Identified in the PDF
+
+The PDF embeds 4 YouTube links that frame the expected conceptual coverage:
+
+- Phased arrays
+- Beamforming via delays / phase shifts
+- Multichannel beamforming for wireless communication
+- Ultrasound electronic beamforming
+
+These topics are **partially represented** in the codebase (array model, steering phase, basic 5G/ultrasound simulators), but several required interactive behaviors and parameter ranges are missing or mismatched.
+
+### Required Fixes / Additions (Expanded from Extracted Task 4 Text)
+
+| Area | Explicit Task 4 Requirement | Current Implementation Evidence | Required Fix / Addition |
+|------|-----------------------------|---------------------------------|-------------------------|
+| General controls: per-element timing/phase | Real-time adjustment of **phase shifts and/or time delays for each element** | OOP/API checks validate architecture and endpoint health, but do not verify per-element UI controls across all modes. | Add a per-element control model (delay + phase arrays), expose in APIs/schemas, and add mode-specific UI editors with immediate visual updates. |
+| General controls: geometry | Support **linear and curved arrays** with **curvature parameter controls** | Existing checks confirm array modeling but do not confirm curved-array controls end-to-end. | Add curved geometry parameters in backend models + schemas and frontend controls (radius/curvature/arc), then validate behavior in all three simulators. |
+| General visualization pipeline | Provide synchronized views of **individual emissions**, **combined interference**, and **final beam profile** | Current visualizations exist, but synchronized 3-view requirement is not explicitly audited against Task 4. | Add a compliance view contract per mode and ensure all three views are visible and synchronized to the same simulation state. |
+| General visual signal behavior | Each element emits a visualized propagation signal; final beam is distinctly emphasized | Visual components exist, but this specific visual requirement is not explicitly verified. | Add explicit per-element propagation rendering and emphasized resultant beam styling in each mode (legend + toggles). |
+| Dynamic steering method | Beam steering should occur by modifying delays/shifts | Steering is present conceptually; explicit delay/phase-driven steering path is not fully validated in reports. | Ensure steering uses delay/phase controls in simulation inputs and document this mapping in UI labels and API payloads. |
+| Multiple phased arrays | Support **multiple phased array units simultaneously** | Not covered by OOP/API verification checklist. | Add multi-array instance support (creation/removal/config per unit), render concurrent beams, and define conflict/resource rules per mode. |
+| Scenario parameter files | Provide predefined scenario setting files that can be **loaded, modified, and saved** | Not covered by current verification artifacts. | Implement scenario file I/O (JSON presets), add load/save UI, and include at least three assignment-aligned scenarios. |
+| Core params (SNR) | SNR adjustable **0 -> 1000** | Frontend SNR slider is **0-60 dB** (`frontend/src/components/ControlPanel.tsx`). API schemas cap SNR at **<= 200 dB** (`backend/api/schemas.py`). | Align allowed range with Task 4 requirement; ensure frontend range matches backend schema and noise model constraints. |
+| 5G interactivity | Interactive 2D map, tower/user add-remove, and **keyboard-controlled user movement** | Backend computes connectivity info, but UI draws links for all tower->user pairs and no keyboard movement is implemented (`frontend/src/pages/Simulator5G.tsx`). | Add keyboard movement for selected users, map controls for add/remove actions, and visualize connectivity using `connectivity_map`. |
+| 5G multi-user beamforming | If multiple users are in range, **dynamically distribute antenna elements** into subarrays per user | Not explicitly verified in current frontend/backend contract checks. | Implement subarray allocation logic, expose allocation state in API, and render per-user beam subsets visually. |
+| 5G handover logic | A user stays with current tower until disconnection, then may switch in overlapping coverage | Handover persistence/switch conditions are not explicitly validated in current report. | Implement explicit connection-state machine (attach/hold/release/switch) and add scenario-based tests. |
+| Radar scan model | Continuous environment scan using **beamformed steering** (not only rotating line) with speed/direction controls | Backend supports targets, but frontend does not expose full target editing; sweep is drawn from a single steering angle and not continuously rotated by scan speed (`frontend/src/pages/SimulatorRadar.tsx`). | Add continuous beamformed scan animation tied to delay/phase steering, plus scan speed/direction controls. |
+| Radar target interaction | Place targets and indicate detections when targets fall within beam | Target interaction exists partially; add/move/delete/resize workflows are not fully exposed in UI. | Add full target editing controls and explicit detection event indicators/logging in the radar view. |
+| Ultrasound beamforming specifics | Custom probe geometry/spacing/count with real-time steering/focusing and realistic attenuation/propagation | Simulator exists, but full requirement coverage is not explicitly verified end-to-end. | Expand ultrasound parameter model and visual diagnostics to demonstrate steering/focus/attenuation effects clearly. |
+| Ultrasound phantom + Doppler controls | Assignment-style phantom/editability and Doppler vessel controls (velocity/direction) | Current phantom is organ-layout drawing, not an assignment-specific phantom workflow (`frontend/src/pages/SimulatorUltrasound.tsx`). Doppler request flag exists but required vessel editing controls are not exposed. | Implement assignment-compliant phantom editing workflow and expose Doppler vessel controls in UI + simulator pipeline. |
+| Advanced requirement: analysis | Compare classical vs AI beam steering/optimization and discuss limitations/trade-offs | Not represented in verification outputs. | Add a short technical note/report section comparing methods and documenting trade-offs (geometry/frequency/element count). |
+| Reliability/performance | Responsive real-time UI; avoid crashes, poor performance, edge-case failures, and redundant code | OOP/API tests do not measure full real-time UI stress behavior. | Add targeted performance + interaction tests (rapid control changes, cancellation, edge ranges) and track pass/fail in verification docs. |
+
+**Status:** These are **outstanding assignment-compliance items** derived from the extracted Task 4 statement. They are not guaranteed by the OOP/API verification steps above.
+
+---
+
 ## Verification Checklist
 
 - [x] All Python imports resolve correctly
@@ -263,7 +305,7 @@ frontend/src/
 
 ## Conclusion
 
-✅ **PROJECT VERIFICATION COMPLETE**
+✅ **OOP/API VERIFICATION COMPLETE** (assignment compliance pending)
 
 The Beamforming Simulator has been successfully migrated from a procedural architecture to a professional-grade object-oriented design. All verification steps confirm:
 
@@ -273,7 +315,9 @@ The Beamforming Simulator has been successfully migrated from a procedural archi
 4. **Test Coverage:** 4/4 integration tests passing with comprehensive validation
 5. **Code Quality:** Full type hints, proper encapsulation, clean separation of concerns
 
-The refactored codebase is production-ready and fully backward-compatible with existing frontend components while providing a robust, maintainable architecture for future enhancements.
+The refactored codebase is production-ready from an **OOP/API correctness** standpoint and is backward-compatible with existing frontend components.
+
+However, **Task 4 assignment compliance** (interactive behaviors, specific UI features, and required parameter ranges) still requires the fixes/additions listed above.
 
 ---
 

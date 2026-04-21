@@ -186,6 +186,13 @@ export default function Simulator5G() {
   const toCanvasX = (x: number) => ((x + 5) / 10) * CANVAS_W;
   const toCanvasY = (y: number) => CANVAS_H - (y / 8) * CANVAS_H;
 
+  // Beam wave animation tuning
+  const DASH_LENGTH_PX = 14;
+  const DASH_GAP_PX = 10;
+  const DASH_SPEED_PX_PER_SEC = 90;
+  const PULSE_SPACING_PX = 68;
+  const PULSE_SPEED_PX_PER_SEC = 170;
+
   // ─── Canvas click → select user ───────────────────────────────────────────
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -209,195 +216,382 @@ export default function Simulator5G() {
     if (bestId === null) setSelectedUserId(null); // click on empty space deselects
   }, [localUsers, selectedUserId]);
 
-  // ─── Canvas drawing ───────────────────────────────────────────────────────
+  // ─── Canvas drawing (continuous animated beams) ─────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext("2d")!;
-    canvas.width  = CANVAS_W;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    canvas.width = CANVAS_W;
     canvas.height = CANVAS_H;
 
-    // Background
-    ctx.fillStyle = "hsl(240,10%,12%)";
-    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
-
-    // Grid
-    ctx.strokeStyle = "hsl(240,10%,18%)";
-    ctx.lineWidth = 0.5;
-    for (let i = 0; i <= 10; i++) {
-      ctx.beginPath(); ctx.moveTo(i * 40, 0); ctx.lineTo(i * 40, CANVAS_H); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, i * 40); ctx.lineTo(CANVAS_W, i * 40); ctx.stroke();
+    const apiTowerById = new Map<number, any>((fiveG?.towers ?? []).map((t: any) => [t.id, t]));
+    const connectedTowerByUserId = new Map<number, number>();
+    for (const u of fiveG?.users ?? []) {
+      if ((u as any).connected_tower_id != null) {
+        connectedTowerByUserId.set(u.id, (u as any).connected_tower_id);
+      }
     }
 
-    // ── Coverage radius circles (drawn behind everything else) ───────────────
-    const mToPxX = CANVAS_W / 10; // 40 px / m
-    const mToPxY = CANVAS_H / 8;  // 50 px / m
-    const mToPx  = (mToPxX + mToPxY) / 2;
+    const mToPxX = CANVAS_W / 10;
+    const mToPxY = CANVAS_H / 8;
+    const mToPx = (mToPxX + mToPxY) / 2;
+    const arrayGeometry = (params.geometry ?? "linear") as "linear" | "curved";
+    const elementCount = Math.max(2, Math.min(64, Math.round(Number(params.numElements ?? 16))));
+    const spacingLambda = Number(params.spacing ?? 0.5);
+    const wavelengthMeters = Number(params.wavelength ?? 1.0);
+    const physicalSpacingMeters = spacingLambda * wavelengthMeters;
 
-    for (const tower of localTowers) {
-      const tx = toCanvasX(tower.x), ty = toCanvasY(tower.y);
-      const apiTower = fiveG?.towers.find((t: any) => t.id === tower.id);
-      const radiusM  = (apiTower as any)?.coverage_radius_m ?? 4.5;
-      const radiusPx = radiusM * mToPx;
-      const hue = TOWER_COLORS[tower.id]?.hue ?? DEFAULT_TOWER_HUE;
+    let rafId = 0;
 
-      // Radial gradient fill — unique per-tower hue
-      const grad = ctx.createRadialGradient(tx, ty, 0, tx, ty, radiusPx);
-      grad.addColorStop(0,    `hsla(${hue},70%,45%,0.22)`);
-      grad.addColorStop(0.65, `hsla(${hue},70%,40%,0.12)`);
-      grad.addColorStop(1,    `hsla(${hue},70%,35%,0.0)`);
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(tx, ty, radiusPx, 0, Math.PI * 2);
-      ctx.fill();
+    const drawFrame = (timeMs: number) => {
+      // Background
+      ctx.fillStyle = "hsl(240,10%,12%)";
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
-      // Dashed border ring in tower color
-      ctx.strokeStyle = `hsla(${hue},70%,65%,0.5)`;
-      ctx.lineWidth   = 1.5;
-      ctx.setLineDash([6, 4]);
-      ctx.beginPath();
-      ctx.arc(tx, ty, radiusPx, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.setLineDash([]);
+      // Grid
+      ctx.strokeStyle = "hsl(240,10%,18%)";
+      ctx.lineWidth = 0.5;
+      for (let i = 0; i <= 10; i++) {
+        ctx.beginPath(); ctx.moveTo(i * 40, 0); ctx.lineTo(i * 40, CANVAS_H); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, i * 40); ctx.lineTo(CANVAS_W, i * 40); ctx.stroke();
+      }
 
-      // "T1 – Violet  5.0 m" label on the right edge
-      const colorName = TOWER_COLORS[tower.id]?.name ?? "";
-      ctx.fillStyle = `hsla(${hue},65%,78%,0.75)`;
-      ctx.font      = "9px JetBrains Mono, monospace";
-      ctx.textAlign = "left";
-      ctx.fillText(`T${tower.id} · ${colorName}  ${radiusM.toFixed(1)} m`, tx + radiusPx + 4, ty + 3);
-    }
+      // Coverage circles
+      for (const tower of localTowers) {
+        const tx = toCanvasX(tower.x), ty = toCanvasY(tower.y);
+        const apiTower = apiTowerById.get(tower.id);
+        const radiusM = (apiTower as any)?.coverage_radius_m ?? 4.5;
+        const radiusPx = radiusM * mToPx;
+        const hue = TOWER_COLORS[tower.id]?.hue ?? DEFAULT_TOWER_HUE;
 
-    // ── Connected beam lines (ONE beam per user — the connected tower only) ──
-    for (const user of localUsers) {
-      // Use the connection from latest API result (falls back to currentConnections)
-      const apiUser   = fiveG?.users.find((u: any) => u.id === user.id);
-      const connTowId = (apiUser as any)?.connected_tower_id ?? currentConnections[user.id] ?? null;
-      if (connTowId === null) continue; // user not connected — skip
-
-      const tower = localTowers.find(t => t.id === connTowId);
-      if (!tower) continue;
-
-      const tx = toCanvasX(tower.x), ty = toCanvasY(tower.y);
-      const ux = toCanvasX(user.x),  uy = toCanvasY(user.y);
-      const hue = TOWER_COLORS[connTowId]?.hue ?? DEFAULT_TOWER_HUE;
-      const isSelectedUser = user.id === selectedUserId;
-
-      const lineGrad = ctx.createLinearGradient(tx, ty, ux, uy);
-      lineGrad.addColorStop(0, `hsla(${hue},85%,60%,${isSelectedUser ? 0.9 : 0.55})`);
-      lineGrad.addColorStop(1, `hsla(${hue},70%,65%,${isSelectedUser ? 0.35 : 0.15})`);
-      ctx.strokeStyle = lineGrad;
-      ctx.lineWidth   = isSelectedUser ? 3 : 2;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(tx, ty);
-      ctx.lineTo(ux, uy);
-      ctx.stroke();
-    }
-
-    // ── Tower icons (triangles in unique tower color) ─────────────────────────
-    for (const tower of localTowers) {
-      const tx  = toCanvasX(tower.x), ty = toCanvasY(tower.y);
-      const hue = TOWER_COLORS[tower.id]?.hue ?? DEFAULT_TOWER_HUE;
-
-      // Tower triangle
-      ctx.fillStyle = `hsl(${hue},70%,55%)`;
-      ctx.strokeStyle = `hsl(${hue},70%,80%)`;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(tx, ty - 13);
-      ctx.lineTo(tx - 9, ty + 7);
-      ctx.lineTo(tx + 9, ty + 7);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      // Tower label in matching color
-      ctx.fillStyle = `hsl(${hue},70%,88%)`;
-      ctx.font = "bold 10px JetBrains Mono, monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(`T${tower.id}`, tx, ty + 22);
-    }
-
-    // ── User dots (color = connected tower or pink if unconnected) ────────────
-    for (const user of localUsers) {
-      const ux = toCanvasX(user.x), uy = toCanvasY(user.y);
-      const isSelected = user.id === selectedUserId;
-
-      // Resolve connected tower
-      const apiUser   = fiveG?.users.find((u: any) => u.id === user.id);
-      const connTowId = (apiUser as any)?.connected_tower_id ?? currentConnections[user.id] ?? null;
-      const connHue   = connTowId != null ? (TOWER_COLORS[connTowId]?.hue ?? DEFAULT_TOWER_HUE) : null;
-      const connected = connTowId != null;
-
-      // In-range ring (green glow when inside *any* coverage circle)
-      const inRange = localTowers.some(tower => {
-        const apiTower = fiveG?.towers.find((t: any) => t.id === tower.id);
-        const radiusM  = (apiTower as any)?.coverage_radius_m ?? 4.5;
-        return Math.hypot(user.x - tower.x, user.y - tower.y) <= radiusM;
-      });
-
-      if (inRange && !isSelected && connHue !== null) {
-        ctx.strokeStyle = `hsla(${connHue},75%,60%,0.6)`;
-        ctx.lineWidth = 2;
+        const grad = ctx.createRadialGradient(tx, ty, 0, tx, ty, radiusPx);
+        grad.addColorStop(0, `hsla(${hue},70%,45%,0.22)`);
+        grad.addColorStop(0.65, `hsla(${hue},70%,40%,0.12)`);
+        grad.addColorStop(1, `hsla(${hue},70%,35%,0.0)`);
+        ctx.fillStyle = grad;
         ctx.beginPath();
-        ctx.arc(ux, uy, 12, 0, Math.PI * 2);
+        ctx.arc(tx, ty, radiusPx, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = `hsla(${hue},70%,65%,0.5)`;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.arc(tx, ty, radiusPx, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const colorName = TOWER_COLORS[tower.id]?.name ?? "";
+        ctx.fillStyle = `hsla(${hue},65%,78%,0.75)`;
+        ctx.font = "9px JetBrains Mono, monospace";
+        ctx.textAlign = "left";
+        ctx.fillText(`T${tower.id} · ${colorName}  ${radiusM.toFixed(1)} m`, tx + radiusPx + 4, ty + 3);
+      }
+
+      // Antenna element coordinates per tower (linear/curved array)
+      const towerElementsById = new Map<number, Array<{ x: number; y: number }>>();
+      const towerArrayCenterById = new Map<number, { x: number; y: number }>();
+
+      for (const tower of localTowers) {
+        const tx = toCanvasX(tower.x);
+        const ty = toCanvasY(tower.y);
+        const hue = TOWER_COLORS[tower.id]?.hue ?? DEFAULT_TOWER_HUE;
+
+        const baseY = ty + 11;
+        // Left panel spacing is d/lambda, so convert to physical spacing for rendering.
+        const requestedSpacingPx = physicalSpacingMeters * mToPx * 0.34;
+        const maxArraySpanPx = 76;
+        const spacingPx = Math.max(
+          3,
+          Math.min(requestedSpacingPx, maxArraySpanPx / Math.max(1, elementCount - 1))
+        );
+
+        const elements: Array<{ x: number; y: number }> = [];
+
+        if (arrayGeometry === "curved") {
+          const curvatureInput = Number(params.radius ?? 1.4);
+          const arcRadius = Math.max(22, Math.min(52, 18 + curvatureInput * 12));
+          const totalSweep = Math.min(Math.PI * 0.92, ((elementCount - 1) * spacingPx) / arcRadius);
+          const centerX = tx;
+          const centerY = baseY + arcRadius;
+          const a0 = -totalSweep / 2;
+
+          for (let i = 0; i < elementCount; i++) {
+            const t = elementCount === 1 ? 0 : i / (elementCount - 1);
+            const a = a0 + t * totalSweep;
+            elements.push({
+              x: centerX + arcRadius * Math.sin(a),
+              y: centerY - arcRadius * Math.cos(a),
+            });
+          }
+
+          // Faint curved support rail for the array
+          ctx.strokeStyle = `hsla(${hue},65%,65%,0.22)`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          for (let i = 0; i < elements.length; i++) {
+            const p = elements[i];
+            if (i === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+          }
+          ctx.stroke();
+        } else {
+          const span = spacingPx * (elementCount - 1);
+          const startX = tx - span / 2;
+          for (let i = 0; i < elementCount; i++) {
+            elements.push({ x: startX + i * spacingPx, y: baseY });
+          }
+
+          // Faint linear support rail for the array
+          ctx.strokeStyle = `hsla(${hue},65%,65%,0.22)`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(startX, baseY);
+          ctx.lineTo(startX + span, baseY);
+          ctx.stroke();
+        }
+
+        // Element dots
+        for (const e of elements) {
+          ctx.fillStyle = `hsla(${hue},80%,70%,0.9)`;
+          ctx.beginPath();
+          ctx.arc(e.x, e.y, 1.8, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        towerElementsById.set(tower.id, elements);
+        towerArrayCenterById.set(tower.id, {
+          x: elements.reduce((s, p) => s + p.x, 0) / Math.max(1, elements.length),
+          y: elements.reduce((s, p) => s + p.y, 0) / Math.max(1, elements.length),
+        });
+      }
+
+      // Connected beam lines with moving dashes and traveling pulse dots
+      const dashOffset = -((timeMs / 1000) * DASH_SPEED_PX_PER_SEC) % (DASH_LENGTH_PX + DASH_GAP_PX);
+      const pulseTravel = ((timeMs / 1000) * PULSE_SPEED_PX_PER_SEC) % PULSE_SPACING_PX;
+
+      for (const user of localUsers) {
+        const connTowId = connectedTowerByUserId.get(user.id) ?? currentConnections[user.id] ?? null;
+        if (connTowId === null) continue;
+
+        const tower = localTowers.find((t) => t.id === connTowId);
+        if (!tower) continue;
+
+        const towerCenter = towerArrayCenterById.get(connTowId);
+        const tx = towerCenter?.x ?? toCanvasX(tower.x);
+        const ty = towerCenter?.y ?? toCanvasY(tower.y);
+        const ux = toCanvasX(user.x), uy = toCanvasY(user.y);
+        const hue = TOWER_COLORS[connTowId]?.hue ?? DEFAULT_TOWER_HUE;
+        const isSelectedUser = user.id === selectedUserId;
+
+        const dx = ux - tx;
+        const dy = uy - ty;
+        const len = Math.hypot(dx, dy);
+        if (len < 1) continue;
+
+        const dirX = dx / len;
+        const dirY = dy / len;
+
+        // Per-element faint wave arcs (individual emissions)
+        const emitterElements = towerElementsById.get(connTowId) ?? [{ x: tx, y: ty }];
+        const wavePeriodPx = 46;
+        const waveTravelPx = ((timeMs / 1000) * (PULSE_SPEED_PX_PER_SEC * 0.58)) % wavePeriodPx;
+        for (let ei = 0; ei < emitterElements.length; ei++) {
+          const em = emitterElements[ei];
+          const exToUser = ux - em.x;
+          const eyToUser = uy - em.y;
+          const angle = Math.atan2(eyToUser, exToUser);
+          const spread = isSelectedUser ? 0.42 : 0.34;
+
+          for (let k = 0; k < 3; k++) {
+            const r = 7 + ((waveTravelPx + ei * 2 + k * (wavePeriodPx / 3)) % wavePeriodPx);
+            const alpha = (isSelectedUser ? 0.28 : 0.18) * Math.max(0.35, 1 - r / 64);
+            ctx.strokeStyle = `hsla(${hue},90%,68%,${alpha})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(em.x, em.y, r, angle - spread, angle + spread);
+            ctx.stroke();
+          }
+        }
+
+        // Bold constructive beam (sum of individual emissions)
+        const sumGrad = ctx.createLinearGradient(tx, ty, ux, uy);
+        sumGrad.addColorStop(0, `hsla(${hue},92%,70%,${isSelectedUser ? 0.55 : 0.35})`);
+        sumGrad.addColorStop(1, `hsla(${hue},82%,68%,${isSelectedUser ? 0.26 : 0.14})`);
+        ctx.strokeStyle = sumGrad;
+        ctx.lineWidth = isSelectedUser ? 5.4 : 4.0;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(tx, ty);
+        ctx.lineTo(ux, uy);
+        ctx.stroke();
+
+        const lineGrad = ctx.createLinearGradient(tx, ty, ux, uy);
+        lineGrad.addColorStop(0, `hsla(${hue},88%,62%,${isSelectedUser ? 0.95 : 0.65})`);
+        lineGrad.addColorStop(1, `hsla(${hue},72%,65%,${isSelectedUser ? 0.45 : 0.22})`);
+        ctx.strokeStyle = lineGrad;
+        ctx.lineWidth = isSelectedUser ? 3.2 : 2.2;
+        ctx.setLineDash([DASH_LENGTH_PX, DASH_GAP_PX]);
+        ctx.lineDashOffset = dashOffset;
+        ctx.beginPath();
+        ctx.moveTo(tx, ty);
+        ctx.lineTo(ux, uy);
+        ctx.stroke();
+
+        // Draw rippling pulse packets moving tower -> user
+        const pulseRadius = isSelectedUser ? 2.8 : 2.2;
+        const glowRadius = isSelectedUser ? 6.8 : 5.6;
+        for (let base = -PULSE_SPACING_PX * 2; base <= len + PULSE_SPACING_PX; base += PULSE_SPACING_PX) {
+          const dist = base + pulseTravel;
+          if (dist < 0 || dist > len) continue;
+
+          const px = tx + dirX * dist;
+          const py = ty + dirY * dist;
+
+          const pulseAlpha = isSelectedUser ? 0.9 : 0.72;
+          ctx.fillStyle = `hsla(${hue},95%,72%,${pulseAlpha})`;
+          ctx.beginPath();
+          ctx.arc(px, py, pulseRadius, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = `hsla(${hue},90%,70%,${isSelectedUser ? 0.35 : 0.24})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(px, py, glowRadius, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        // Endpoint focus near connected user
+        ctx.setLineDash([]);
+        ctx.lineDashOffset = 0;
+        ctx.strokeStyle = `hsla(${hue},90%,70%,${isSelectedUser ? 0.42 : 0.24})`;
+        ctx.lineWidth = isSelectedUser ? 2.2 : 1.4;
+        ctx.beginPath();
+        ctx.arc(ux, uy, isSelectedUser ? 9 : 7, 0, Math.PI * 2);
         ctx.stroke();
       }
 
-      // Selection glow
-      if (isSelected) {
-        const glowHue = connHue ?? 45;
-        ctx.strokeStyle = `hsl(${glowHue},95%,65%)`;
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.arc(ux, uy, 14, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.strokeStyle = `hsla(${glowHue},85%,65%,0.25)`;
+      ctx.setLineDash([]);
+      ctx.lineDashOffset = 0;
+
+      // Tower icons
+      for (const tower of localTowers) {
+        const tx = toCanvasX(tower.x), ty = toCanvasY(tower.y);
+        const hue = TOWER_COLORS[tower.id]?.hue ?? DEFAULT_TOWER_HUE;
+
+        ctx.fillStyle = `hsl(${hue},70%,55%)`;
+        ctx.strokeStyle = `hsl(${hue},70%,80%)`;
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.arc(ux, uy, 20, 0, Math.PI * 2);
+        ctx.moveTo(tx, ty - 13);
+        ctx.lineTo(tx - 9, ty + 7);
+        ctx.lineTo(tx + 9, ty + 7);
+        ctx.closePath();
+        ctx.fill();
         ctx.stroke();
+
+        ctx.fillStyle = `hsl(${hue},70%,88%)`;
+        ctx.font = "bold 10px JetBrains Mono, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(`T${tower.id}`, tx, ty + 22);
       }
 
-      // User dot — tower color if connected, pink if not
-      ctx.fillStyle = isSelected
-        ? `hsl(${connHue ?? 45},90%,60%)`
-        : connected
-        ? `hsl(${connHue},68%,58%)`
-        : "hsl(320,60%,55%)";
-      ctx.beginPath();
-      ctx.arc(ux, uy, 7, 0, Math.PI * 2);
-      ctx.fill();
+      // User markers
+      for (const user of localUsers) {
+        const ux = toCanvasX(user.x), uy = toCanvasY(user.y);
+        const isSelected = user.id === selectedUserId;
 
-      // "U101" label
-      ctx.fillStyle = isSelected
-        ? `hsl(${connHue ?? 45},80%,88%)`
-        : connected ? `hsl(${connHue},65%,82%)` : "hsl(320,60%,85%)";
-      ctx.font = "bold 10px JetBrains Mono, monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(`U${user.id}`, ux, uy - 17);
+        const connTowId = connectedTowerByUserId.get(user.id) ?? currentConnections[user.id] ?? null;
+        const connHue = connTowId != null ? (TOWER_COLORS[connTowId]?.hue ?? DEFAULT_TOWER_HUE) : null;
+        const connected = connTowId != null;
 
-      // "→ T1" connectivity badge  (or "✖ no signal")
-      if (connected) {
-        const tName = TOWER_COLORS[connTowId!]?.name ?? `T${connTowId}`;
-        ctx.fillStyle = `hsla(${connHue},65%,72%,0.85)`;
-        ctx.font = "8px JetBrains Mono, monospace";
-        ctx.fillText(`→ T${connTowId} ${tName}`, ux, uy + 20);
-      } else {
-        ctx.fillStyle = "hsla(0,65%,60%,0.6)";
-        ctx.font = "8px JetBrains Mono, monospace";
-        ctx.fillText("✖ no signal", ux, uy + 20);
+        const inRange = localTowers.some((tower) => {
+          const apiTower = apiTowerById.get(tower.id);
+          const radiusM = (apiTower as any)?.coverage_radius_m ?? 4.5;
+          return Math.hypot(user.x - tower.x, user.y - tower.y) <= radiusM;
+        });
+
+        if (inRange && !isSelected && connHue !== null) {
+          ctx.strokeStyle = `hsla(${connHue},75%,60%,0.6)`;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(ux, uy, 12, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        if (isSelected) {
+          const glowHue = connHue ?? 45;
+          ctx.strokeStyle = `hsl(${glowHue},95%,65%)`;
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.arc(ux, uy, 14, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = `hsla(${glowHue},85%,65%,0.25)`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(ux, uy, 20, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        ctx.fillStyle = isSelected
+          ? `hsl(${connHue ?? 45},90%,60%)`
+          : connected
+            ? `hsl(${connHue},68%,58%)`
+            : "hsl(320,60%,55%)";
+        ctx.beginPath();
+        ctx.arc(ux, uy, 7, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = isSelected
+          ? `hsl(${connHue ?? 45},80%,88%)`
+          : connected ? `hsl(${connHue},65%,82%)` : "hsl(320,60%,85%)";
+        ctx.font = "bold 10px JetBrains Mono, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(`U${user.id}`, ux, uy - 17);
+
+        if (connected) {
+          const tName = TOWER_COLORS[connTowId!]?.name ?? `T${connTowId}`;
+          ctx.fillStyle = `hsla(${connHue},65%,72%,0.85)`;
+          ctx.font = "8px JetBrains Mono, monospace";
+          ctx.fillText(`→ T${connTowId} ${tName}`, ux, uy + 20);
+        } else {
+          ctx.fillStyle = "hsla(0,65%,60%,0.6)";
+          ctx.font = "8px JetBrains Mono, monospace";
+          ctx.fillText("✖ no signal", ux, uy + 20);
+        }
+
+        if (isSelected) {
+          ctx.fillStyle = `hsl(${connHue ?? 45},75%,72%)`;
+          ctx.font = "9px JetBrains Mono, monospace";
+          ctx.fillText(`(${user.x.toFixed(1)}, ${user.y.toFixed(1)})`, ux, uy - 28);
+        }
       }
 
-      // Position readout for selected user
-      if (isSelected) {
-        ctx.fillStyle = `hsl(${connHue ?? 45},75%,72%)`;
-        ctx.font = "9px JetBrains Mono, monospace";
-        ctx.fillText(`(${user.x.toFixed(1)}, ${user.y.toFixed(1)})`, ux, uy - 28);
-      }
-    }
-  }, [localUsers, localTowers, selectedUserId, fiveG, currentConnections]);
+      rafId = requestAnimationFrame(drawFrame);
+    };
+
+    rafId = requestAnimationFrame(drawFrame);
+    return () => cancelAnimationFrame(rafId);
+  }, [
+    localUsers,
+    localTowers,
+    selectedUserId,
+    fiveG,
+    currentConnections,
+    CANVAS_W,
+    CANVAS_H,
+    DASH_LENGTH_PX,
+    DASH_GAP_PX,
+    DASH_SPEED_PX_PER_SEC,
+    PULSE_SPACING_PX,
+    PULSE_SPEED_PX_PER_SEC,
+    params.geometry,
+    params.numElements,
+    params.spacing,
+    params.radius,
+  ]);
 
 
 
