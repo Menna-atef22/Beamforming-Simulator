@@ -236,6 +236,61 @@ class ArrayModel:
         
         return af_values
     
+    def compute_multi_steered_af(
+        self,
+        angles_deg: List[float],
+        steering_angles_deg: List[float],
+        weights: List[float] = None
+    ) -> List[float]:
+        """Compute Array Factor with independent steering angle per element.
+        
+        Args:
+            angles_deg: List of observation angles (in degrees).
+            steering_angles_deg: Main beam steering angle per element (in degrees).
+                                Must match num_elements.
+            weights: Optional amplitude weights for each element (default: uniform).
+            
+        Returns:
+            List of Array Factor magnitudes (normalized).
+        """
+        if weights is None:
+            weights = [1.0] * self.num_elements
+            
+        if len(weights) != self.num_elements:
+            raise ValueError(f"weights length ({len(weights)}) must match num_elements")
+            
+        if len(steering_angles_deg) != self.num_elements:
+            raise ValueError(f"steering_angles_deg length ({len(steering_angles_deg)}) must match num_elements")
+            
+        af_values = []
+        for angle_deg in angles_deg:
+            angle_rad = math.radians(angle_deg)
+            real_sum = 0.0
+            imag_sum = 0.0
+            
+            for n, (elem, steer_deg) in enumerate(zip(self.elements, steering_angles_deg)):
+                steer_rad = math.radians(steer_deg)
+                
+                obs_phase = -2.0 * math.pi * (
+                    elem.x * math.sin(angle_rad) + elem.y * math.cos(angle_rad)
+                ) / self.wavelength
+                steer_phase = -2.0 * math.pi * (
+                    elem.x * math.sin(steer_rad) + elem.y * math.cos(steer_rad)
+                ) / self.wavelength
+                
+                phase = obs_phase - steer_phase
+                w = weights[n]
+                real_sum += w * math.cos(phase)
+                imag_sum += w * math.sin(phase)
+            
+            af_mag = math.sqrt(real_sum**2 + imag_sum**2)
+            total_weight = sum(weights)
+            if total_weight > 0:
+                af_mag /= total_weight
+            af_values.append(af_mag)
+            
+        return af_values
+    
     def get_element_spacing_meters(self) -> float:
         """Get element spacing in physical meters.
         

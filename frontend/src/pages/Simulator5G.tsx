@@ -9,6 +9,7 @@ import {
   LineChart, Line,
 } from "recharts";
 import BeamPlot from "@/components/BeamPlot";
+import HeatmapView from "@/components/HeatmapView";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import TowerConfigPopup, { TowerParams } from "@/components/TowerConfigPopup";
 import "./Simulator5G.css";
@@ -19,7 +20,6 @@ const WORLD_MAX_X = 14.0;
 const WORLD_MIN_Y = 0.2;
 const WORLD_MAX_Y = 10.5;
 const STEP = 0.25; // metres per key press
-const MIN_COVERAGE_RADIUS_RATIO = 0.22;
 
 // Convert canvas percentage anchors to world coordinates (y% measured from top of canvas).
 const fromCanvasPercent = (px: number, py: number) => {
@@ -90,6 +90,7 @@ export default function Simulator5G() {
   const [selectedTowerId, setSelectedTowerId] = useState<number | null>(null);
   // Canvas-space anchor for tower popup (in viewport px)
   const [towerPopupAnchor, setTowerPopupAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [analysisViewMode, setAnalysisViewMode] = useState<"heatmap" | "beam">("heatmap");
 
   // ─── Handoff state: {userId: towerId} – updated from API, sent back for hysteresis
   const [currentConnections, setCurrentConnections] = useState<Record<number, number>>({});
@@ -150,7 +151,6 @@ export default function Simulator5G() {
         isInitialLoadRef.current = false;
         // Update local connection map from API response
         const newConns: Record<number, number> = {};
-        const minCoverageRadiusM = (WORLD_MAX_X - WORLD_MIN_X) * MIN_COVERAGE_RADIUS_RATIO;
         const towerById = new Map<number, any>((res.data?.towers ?? []).map((t: any) => [t.id, t]));
         for (const u of (res.data?.users ?? [])) {
           const connTowId = (u as any).connected_tower_id;
@@ -158,7 +158,7 @@ export default function Simulator5G() {
           const tower = towerById.get(connTowId);
           if (!tower) continue;
 
-          const radiusM = Math.max(((tower as any).coverage_radius_m ?? 4.5), minCoverageRadiusM);
+          const radiusM = Number((tower as any).coverage_radius_m ?? 4.5);
           const dx = (u as any).x - (tower as any).x;
           const dy = (u as any).y - (tower as any).y;
           if (Math.hypot(dx, dy) <= radiusM) {
@@ -265,13 +265,12 @@ export default function Simulator5G() {
   const CANVAS_H = canvasSize.height;
 
   const towerCoverageRadiusByTowerId = useMemo(() => {
-    const minCoverageRadiusM = (WORLD_MAX_X - WORLD_MIN_X) * MIN_COVERAGE_RADIUS_RATIO;
     const apiTowerById = new Map<number, any>((fiveG?.towers ?? []).map((t: any) => [t.id, t]));
     const radiusById = new Map<number, number>();
 
     for (const tower of localTowers) {
       const apiTower = apiTowerById.get(tower.id);
-      const radiusM = Math.max(((apiTower as any)?.coverage_radius_m ?? 4.5), minCoverageRadiusM);
+      const radiusM = Number((apiTower as any)?.coverage_radius_m ?? 4.5);
       radiusById.set(tower.id, radiusM);
     }
 
@@ -304,6 +303,96 @@ export default function Simulator5G() {
 
     return effective;
   }, [fiveG?.users, localUsers, localTowers, currentConnections, towerCoverageRadiusByTowerId]);
+
+  // Immediate fallback connectivity from current map geometry.
+  // Keeps labels/charts responsive while API responses are in-flight.
+  const nearestInRangeTowerByUserId = useMemo(() => {
+    const out = new Map<number, number>();
+    for (const user of localUsers) {
+      let bestTowerId: number | null = null;
+      let bestDist = Number.POSITIVE_INFINITY;
+      for (const tower of localTowers) {
+        const radiusM = towerCoverageRadiusByTowerId.get(tower.id) ?? 4.5;
+        const d = Math.hypot(user.x - tower.x, user.y - tower.y);
+        if (d <= radiusM && d < bestDist) {
+          bestDist = d;
+          bestTowerId = tower.id;
+        }
+      }
+      if (bestTowerId != null) out.set(user.id, bestTowerId);
+    }
+    return out;
+  }, [localUsers, localTowers, towerCoverageRadiusByTowerId]);
+
+  const liveConnectedTowerByUserId = useMemo(() => {
+    const merged = new Map<number, number>();
+    for (const user of localUsers) {
+      const apiConn = effectiveConnectedTowerByUserId.get(user.id);
+      if (apiConn != null) {
+        merged.set(user.id, apiConn);
+        continue;
+      }
+      const fallbackConn = nearestInRangeTowerByUserId.get(user.id);
+      if (fallbackConn != null) merged.set(user.id, fallbackConn);
+    }
+    return merged;
+  }, [localUsers, effectiveConnectedTowerByUserId, nearestInRangeTowerByUserId]);
+
+  const activeLinkTelemetry = useMemo(() => {
+    const connectedUsers = localUsers.filter((u) => liveConnectedTowerByUserId.get(u.id) != null);
+    if (connectedUsers.length === 0) return null;
+
+    // Priority: selected user if connected, otherwise first connected user.
+    const activeUser = (
+      selectedUserId != null
+        ? connectedUsers.find((u) => u.id === selectedUserId)
+        : null
+    ) ?? connectedUsers[0];
+    if (!activeUser) return null;
+
+    const towerId = liveConnectedTowerByUserId.get(activeUser.id);
+    if (towerId == null) return null;
+    const tower = localTowers.find((t) => t.id === towerId);
+    if (!tower) return null;
+
+    const dx = activeUser.x - tower.x;
+    const dy = activeUser.y - tower.y;
+    const thetaRad = Math.atan2(dy, dx); // requested convention: atan2(user.y - tower.y, user.x - tower.x)
+    const steeringDeg = (thetaRad * 180) / Math.PI;
+
+    const c = 3e8;
+    const freqHz = Number(tower.frequency ?? params.frequency ?? 28e9);
+    const wavelength = c / Math.max(1.0, freqHz);
+    const phaseShiftRad = (2 * Math.PI * Number(params.spacing ?? 0.5) * Math.sin(thetaRad)) / wavelength;
+
+    return {
+      userId: activeUser.id,
+      towerId,
+      steeringDeg,
+      wavelength,
+      phaseShiftRad,
+    };
+  }, [localUsers, localTowers, liveConnectedTowerByUserId, selectedUserId, params.frequency, params.spacing]);
+
+  // Keep left-panel steering + phase-shift telemetry synchronized with the active link.
+  useEffect(() => {
+    if (!activeLinkTelemetry) return;
+    setParams((prev) => {
+      const nextSteering = activeLinkTelemetry.steeringDeg;
+      const nextWavelength = activeLinkTelemetry.wavelength;
+      if (
+        Math.abs((prev.steeringAngleDeg ?? 0) - nextSteering) < 1e-3 &&
+        Math.abs((prev.wavelength ?? 1.0) - nextWavelength) < 1e-9
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        steeringAngleDeg: nextSteering,
+        wavelength: nextWavelength,
+      };
+    });
+  }, [activeLinkTelemetry]);
 
   // Radius-aware viewport fit so all towers and coverage circles remain fully visible.
   const mapViewport = useMemo(() => {
@@ -532,7 +621,7 @@ export default function Simulator5G() {
         } else {
           // Linear aperture is centered at tower and oriented perpendicular to beam direction.
           const connectedUsersForTower = localUsers.filter((u) => {
-            const connTowId = effectiveConnectedTowerByUserId.get(u.id) ?? null;
+            const connTowId = liveConnectedTowerByUserId.get(u.id) ?? null;
             return connTowId === tower.id;
           });
 
@@ -652,7 +741,7 @@ export default function Simulator5G() {
       const pulseTravel = ((timeMs / 1000) * PULSE_SPEED_PX_PER_SEC) % PULSE_SPACING_PX;
 
       for (const user of localUsers) {
-        const connTowId = effectiveConnectedTowerByUserId.get(user.id) ?? null;
+        const connTowId = liveConnectedTowerByUserId.get(user.id) ?? null;
         if (connTowId === null) continue;
 
         const tower = localTowers.find((t) => t.id === connTowId);
@@ -665,7 +754,13 @@ export default function Simulator5G() {
         const tx = towerCenter?.x ?? toCanvasX(tower.x);
         const ty = towerCenter?.y ?? toCanvasY(tower.y);
         const ux = toCanvasX(user.x), uy = toCanvasY(user.y);
-        const hue = TOWER_COLORS[connTowId]?.hue ?? DEFAULT_TOWER_HUE;
+        const towerAllocs = elementAllocsByTowerId.get(connTowId) ?? [];
+        const splitAlloc = towerAllocs.length > 1
+          ? towerAllocs.find((a) => a.user_id === user.id)
+          : null;
+        const hue = splitAlloc
+          ? (USER_COLORS[user.id]?.hue ?? DEFAULT_USER_HUE)
+          : (TOWER_COLORS[connTowId]?.hue ?? DEFAULT_TOWER_HUE);
         const isSelectedUser = user.id === selectedUserId;
 
         const dx = ux - tx;
@@ -767,7 +862,7 @@ export default function Simulator5G() {
         let connectedUser: (typeof localUsers)[number] | null = null;
         let bestDist = Number.POSITIVE_INFINITY;
         for (const u of localUsers) {
-          const connTowId = effectiveConnectedTowerByUserId.get(u.id) ?? null;
+          const connTowId = liveConnectedTowerByUserId.get(u.id) ?? null;
           if (connTowId !== tower.id) continue;
           const d = Math.hypot(u.x - tower.x, u.y - tower.y);
           if (d < bestDist) {
@@ -784,9 +879,9 @@ export default function Simulator5G() {
         if (towerAllocs.length >= 2) {
           // Multi-user: show element split
           statusLine1 = towerAllocs
-            .map(a => `${a.num_elements}→U${a.user_id}`)
-            .join(" + ");
-          statusLine2 = `Total: ${towerAllocs.reduce((s, a) => s + a.num_elements, 0)} elem`;
+            .map(a => `${a.num_elements} elements → U${a.user_id}`)
+            .join(", ");
+          statusLine2 = null;
         } else if (connectedUser) {
           const thetaRad = Math.atan2(connectedUser.x - tower.x, connectedUser.y - tower.y);
           statusLine1 = `θ ${((thetaRad * 180) / Math.PI).toFixed(1)}°`;
@@ -846,7 +941,7 @@ export default function Simulator5G() {
         const ux = toCanvasX(user.x), uy = toCanvasY(user.y);
         const isSelected = user.id === selectedUserId;
 
-        const connTowId = effectiveConnectedTowerByUserId.get(user.id) ?? null;
+        const connTowId = liveConnectedTowerByUserId.get(user.id) ?? null;
         const connHue = connTowId != null ? (TOWER_COLORS[connTowId]?.hue ?? DEFAULT_TOWER_HUE) : null;
         const connected = connTowId != null;
 
@@ -925,6 +1020,7 @@ export default function Simulator5G() {
     elementAllocsByTowerId,
     currentConnections,
     effectiveConnectedTowerByUserId,
+    liveConnectedTowerByUserId,
     towerCoverageRadiusByTowerId,
     mapViewport,
     CANVAS_W,
@@ -987,19 +1083,26 @@ export default function Simulator5G() {
   const userSignalData = useMemo(() =>
     {
       const userById = new Map<number, any>((fiveG?.users ?? []).map((u: any) => [u.id, u]));
+      const localTowerById = new Map<number, { x: number; y: number }>(
+        localTowers.map((t) => [t.id, { x: t.x, y: t.y }])
+      );
       const signalByUserTower = new Map<string, number>();
+      const bestSignalByUser = new Map<number, number>();
 
       for (const c of (fiveG?.connectivityMap as any[] ?? [])) {
         const userId = (c as any).userId ?? (c as any).user_id;
         const towerId = (c as any).towerId ?? (c as any).tower_id;
         const signal = (c as any).signalStrength ?? (c as any).signal_strength ?? 0;
         if (typeof userId === "number" && typeof towerId === "number") {
-          signalByUserTower.set(`${userId}:${towerId}`, Number(signal) || 0);
+          const s = Number(signal) || 0;
+          signalByUserTower.set(`${userId}:${towerId}`, s);
+          const prevBest = bestSignalByUser.get(userId) ?? 0;
+          if (s > prevBest) bestSignalByUser.set(userId, s);
         }
       }
 
       return localUsers.map((u) => {
-        const connectedTowerId = effectiveConnectedTowerByUserId.get(u.id) ?? null;
+        const connectedTowerId = liveConnectedTowerByUserId.get(u.id) ?? null;
         const connectedSignal = connectedTowerId != null
           ? signalByUserTower.get(`${u.id}:${connectedTowerId}`)
           : undefined;
@@ -1008,20 +1111,172 @@ export default function Simulator5G() {
           (userById.get(u.id) as any)?.signalStrength ??
           0
         ) || 0;
-        const signal = connectedTowerId != null ? (connectedSignal ?? fallbackSignal) : 0;
+        const bestKnownSignal = bestSignalByUser.get(u.id) ?? fallbackSignal;
+        let signal = connectedTowerId != null
+          ? (connectedSignal ?? bestKnownSignal)
+          : 0;
+
+        // Distance-dominant proxy for robust UI behavior:
+        // when users share a tower, closer users must read stronger than farther users.
+        if (connectedTowerId != null) {
+          const tower = localTowerById.get(connectedTowerId);
+          if (tower) {
+            const d = Math.max(0.25, Math.hypot(u.x - tower.x, u.y - tower.y));
+            const allocs = elementAllocsByTowerId.get(connectedTowerId) ?? [];
+            const alloc = allocs.find((a) => Number(a.user_id) === u.id);
+            const allocFraction = alloc?.fraction ?? 1.0;
+            const distanceProxy = allocFraction / (d * d);
+
+            if (!Number.isFinite(signal) || signal <= 1e-6 || alloc != null) {
+              signal = distanceProxy;
+            } else {
+              // Keep physically computed signal, but clamp with proxy floor to avoid inversions.
+              signal = Math.max(signal, distanceProxy * 0.5);
+            }
+          }
+        }
 
         return {
           id: u.id,
           name: `User ${u.id}`,
-          signal: parseFloat(signal.toFixed(3)),
+          // Preserve dynamic range so bars don't disappear from aggressive rounding.
+          signal: parseFloat(signal.toFixed(6)),
           connectedTowerId,
         };
       });
     },
-    [fiveG?.users, fiveG?.connectivityMap, localUsers, effectiveConnectedTowerByUserId]
+    [fiveG?.users, fiveG?.connectivityMap, localUsers, localTowers, liveConnectedTowerByUserId, elementAllocsByTowerId]
   );
 
-  const activeTowerIds = useMemo(() => new Set<number>(Array.from(effectiveConnectedTowerByUserId.values())), [effectiveConnectedTowerByUserId]);
+  const activeTowerIds = useMemo(() => new Set<number>(Array.from(liveConnectedTowerByUserId.values())), [liveConnectedTowerByUserId]);
+
+  const interferenceHeatmapData = useMemo(() => {
+    const GRID_N = 180;
+    const C = 3e8;
+    const activeIds = new Set<number>(Array.from(liveConnectedTowerByUserId.values()));
+    const participatingTowers = localTowers.filter((t) => activeIds.has(t.id));
+    const localUsersById = new Map<number, { id: number; x: number; y: number }>(localUsers.map((u) => [u.id, u]));
+    const allocsByTower = elementAllocsByTowerId;
+    const kEpsilon = 1e-6;
+
+    const spanX = Math.max(1e-6, mapViewport.maxX - mapViewport.minX);
+    const spanY = Math.max(1e-6, mapViewport.maxY - mapViewport.minY);
+    const xRange = Array.from({ length: GRID_N }, (_, i) => mapViewport.minX + (i / (GRID_N - 1)) * spanX);
+    const yRange = Array.from({ length: GRID_N }, (_, i) => mapViewport.minY + (i / (GRID_N - 1)) * spanY);
+
+    if (participatingTowers.length === 0) {
+      return {
+        grid: Array.from({ length: GRID_N }, () => Array.from({ length: GRID_N }, () => 0)),
+        xRange,
+        yRange,
+        maxVal: 1,
+        extent: Math.max(spanX, spanY),
+      };
+    }
+
+    const elementEmitters: Array<{ x: number; y: number; amp: number; phase: number }> = [];
+
+    for (const tower of participatingTowers) {
+      const nElem = Math.max(2, Math.min(64, Math.round(Number(tower.num_elements ?? params.numElements ?? 16))));
+      const freqHz = Number(tower.frequency ?? params.frequency ?? 28e9);
+      const wavelength = Math.max(1e-9, C / Math.max(1.0, freqHz));
+      const spacingMeters = Math.max(1e-6, Number(params.spacing ?? 0.5) * wavelength);
+      const centerOffset = (nElem - 1) / 2;
+      const allocs = allocsByTower.get(tower.id) ?? [];
+
+      // Beam axis follows average direction of connected users.
+      let beamDirX = 0;
+      let beamDirY = 1;
+      const connectedUsers = localUsers.filter((u) => liveConnectedTowerByUserId.get(u.id) === tower.id);
+      if (connectedUsers.length > 0) {
+        let sx = 0;
+        let sy = 0;
+        for (const u of connectedUsers) {
+          const dx = u.x - tower.x;
+          const dy = u.y - tower.y;
+          const mag = Math.hypot(dx, dy);
+          if (mag > 1e-6) {
+            sx += dx / mag;
+            sy += dy / mag;
+          }
+        }
+        const smag = Math.hypot(sx, sy);
+        if (smag > 1e-6) {
+          beamDirX = sx / smag;
+          beamDirY = sy / smag;
+        }
+      }
+      const axisX = -beamDirY;
+      const axisY = beamDirX;
+
+      for (let i = 0; i < nElem; i++) {
+        const offset = (i - centerOffset) * spacingMeters;
+        const ex = tower.x + axisX * offset;
+        const ey = tower.y + axisY * offset;
+
+        let steerX = beamDirX;
+        let steerY = beamDirY;
+        const alloc = allocs.find((a: any) => i >= a.element_start && i < a.element_end);
+        if (alloc) {
+          const target = localUsersById.get(Number(alloc.user_id));
+          if (target) {
+            const dx = target.x - ex;
+            const dy = target.y - ey;
+            const mag = Math.hypot(dx, dy);
+            if (mag > 1e-6) {
+              steerX = dx / mag;
+              steerY = dy / mag;
+            }
+          }
+        }
+
+        // Simple steering phase term for each element against its selected beam direction.
+        const phase = -((2 * Math.PI) / wavelength) * (ex * steerX + ey * steerY);
+        elementEmitters.push({ x: ex, y: ey, amp: 1, phase });
+      }
+    }
+
+    const rawGrid: number[][] = [];
+    let maxVal = 0;
+
+    for (let yi = 0; yi < GRID_N; yi++) {
+      const y = yRange[yi];
+      const row: number[] = [];
+      for (let xi = 0; xi < GRID_N; xi++) {
+        const x = xRange[xi];
+        let real = 0;
+        let imag = 0;
+        for (const em of elementEmitters) {
+          const r = Math.max(kEpsilon, Math.hypot(x - em.x, y - em.y));
+          const phase = ((2 * Math.PI) * (r / Math.max(1e-9, C / Math.max(1.0, Number(params.frequency ?? 28e9))))) + em.phase;
+          const a = em.amp / Math.sqrt(r);
+          real += a * Math.cos(phase);
+          imag += a * Math.sin(phase);
+        }
+        const intensity = real * real + imag * imag;
+        row.push(intensity);
+        if (intensity > maxVal) maxVal = intensity;
+      }
+      rawGrid.push(row);
+    }
+
+    return {
+      grid: rawGrid,
+      xRange,
+      yRange,
+      maxVal: Math.max(1e-9, maxVal),
+      extent: Math.max(spanX, spanY),
+    };
+  }, [
+    params.frequency,
+    params.numElements,
+    params.spacing,
+    localUsers,
+    localTowers,
+    liveConnectedTowerByUserId,
+    elementAllocsByTowerId,
+    mapViewport,
+  ]);
 
   const activeBeamSeries = useMemo(() => {
     const rows = (result?.data?.beamPatterns ?? []).map((bp: any, idx: number) => {
@@ -1047,21 +1302,54 @@ export default function Simulator5G() {
     return (activeRows.length > 0 ? activeRows : rows).sort((a, b) => a.towerId - b.towerId);
   }, [result?.data?.beamPatterns, activeTowerIds]);
 
-  const distSignalData = useMemo(() =>
-    (fiveG?.towers.flatMap((tower: Tower) =>
-      (fiveG?.users ?? []).map((user: User) => {
-        const dx = user.x - tower.x;
-        const dy = user.y - tower.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+  const distanceChart = useMemo(() => {
+    const SAMPLE_COUNT = 40;
+    const connectedTowerIds = Array.from(new Set(Array.from(liveConnectedTowerByUserId.values())));
+    const towers = localTowers.filter((t) => connectedTowerIds.includes(t.id));
+
+    if (towers.length === 0) {
+      return { curveData: [] as Array<Record<string, number>>, markers: [] as Array<{ userId: number; towerId: number; distance: number; signal: number }> };
+    }
+
+    const towerRadiusById = new Map<number, number>();
+    for (const t of towers) {
+      towerRadiusById.set(t.id, towerCoverageRadiusByTowerId.get(t.id) ?? Number(t.coverage_radius_m ?? 4.5));
+    }
+    const maxRadius = Math.max(...Array.from(towerRadiusById.values()), 1);
+    const minDist = 0.25;
+
+    const curveData = Array.from({ length: SAMPLE_COUNT }, (_, i) => {
+      const d = minDist + (i / (SAMPLE_COUNT - 1)) * (maxRadius - minDist);
+      const row: Record<string, number> = { distance: parseFloat(d.toFixed(2)) };
+      for (const t of towers) {
+        const radius = towerRadiusById.get(t.id) ?? maxRadius;
+        const key = `tower_${t.id}`;
+        row[key] = d <= radius ? (1 / (d * d)) : 0;
+      }
+      return row;
+    });
+
+    const markers = localUsers
+      .map((u) => {
+        const towerId = liveConnectedTowerByUserId.get(u.id);
+        if (towerId == null) return null;
+        const tower = localTowers.find((t) => t.id === towerId);
+        if (!tower) return null;
+        const d = Math.max(minDist, Math.hypot(u.x - tower.x, u.y - tower.y));
+        const allocs = elementAllocsByTowerId.get(towerId) ?? [];
+        const alloc = allocs.find((a) => Number(a.user_id) === u.id);
+        const allocFraction = alloc?.fraction ?? 1.0;
         return {
-          distance: parseFloat(dist.toFixed(2)),
-          signal:   parseFloat((((user as any).signalStrength ?? (user as any).signal_strength ?? 0) / (fiveG?.towers.length ?? 1)).toFixed(3)),
-          label:    `T${tower.id}→U${user.id}`,
+          userId: u.id,
+          towerId,
+          distance: parseFloat(d.toFixed(2)),
+          signal: parseFloat((allocFraction / (d * d)).toFixed(6)),
         };
       })
-    ) ?? []).sort((a, b) => a.distance - b.distance),
-    [fiveG?.towers, fiveG?.users]
-  );
+      .filter((m): m is { userId: number; towerId: number; distance: number; signal: number } => m !== null);
+
+    return { curveData, markers };
+  }, [localUsers, localTowers, liveConnectedTowerByUserId, elementAllocsByTowerId, towerCoverageRadiusByTowerId]);
 
   return (
     <MainLayout controlPanel={<ControlPanel params={params} onParamChange={updateParam} />}>
@@ -1183,11 +1471,9 @@ export default function Simulator5G() {
                     <Cell
                       key={`cell-${i}`}
                       fill={
-                        entry.name === `User ${selectedUserId}`
-                          ? "hsl(45,90%,55%)"
-                          : entry.connectedTowerId != null
-                            ? `hsl(${TOWER_COLORS[entry.connectedTowerId]?.hue ?? DEFAULT_TOWER_HUE},70%,50%)`
-                            : "hsl(0,0%,55%)"
+                        entry.connectedTowerId != null
+                          ? `hsl(${TOWER_COLORS[entry.connectedTowerId]?.hue ?? DEFAULT_TOWER_HUE},70%,50%)`
+                          : "hsl(0,0%,55%)"
                       }
                     />
                   ))}
@@ -1212,56 +1498,101 @@ export default function Simulator5G() {
               </div>
             )}
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={distSignalData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
+              <LineChart data={distanceChart.curveData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
                 <XAxis dataKey="distance" tick={{ fontSize: 9 }}
                   label={{ value: "Distance (m)", position: "bottom", offset: 5, style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
                 <YAxis tick={{ fontSize: 9 }}
                   label={{ value: "Signal", angle: -90, position: "insideLeft", style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
                 <Tooltip contentStyle={{ backgroundColor: "hsl(240,10%,15%)", border: "1px solid hsl(240,10%,22%)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
-                <Line type="monotone" dataKey="signal" stroke="hsl(280,60%,55%)" strokeWidth={2} dot={{ r: 4, fill: "hsl(320,70%,60%)" }} />
+                {Array.from(new Set(Array.from(liveConnectedTowerByUserId.values()))).sort((a, b) => a - b).map((towerId) => (
+                  <Line
+                    key={`curve-${towerId}`}
+                    type="monotone"
+                    dataKey={`tower_${towerId}`}
+                    stroke={`hsl(${TOWER_COLORS[towerId]?.hue ?? DEFAULT_TOWER_HUE},75%,58%)`}
+                    strokeWidth={2}
+                    dot={false}
+                    connectNulls={false}
+                  />
+                ))}
+                {distanceChart.markers.map((m) => (
+                  <Line
+                    key={`marker-${m.userId}`}
+                    data={[{ distance: m.distance, signal: m.signal }]}
+                    type="linear"
+                    dataKey="signal"
+                    stroke="transparent"
+                    dot={{
+                      r: 5,
+                      fill: `hsl(${TOWER_COLORS[m.towerId]?.hue ?? DEFAULT_TOWER_HUE},85%,70%)`,
+                      stroke: "hsl(0,0%,10%)",
+                      strokeWidth: 1.2,
+                    }}
+                    isAnimationActive={false}
+                    legendType="none"
+                  />
+                ))}
               </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
 
-        {/* ── Tower Beam Direction ──────────────────────────────────────── */}
+        {/* ── Interference / Beam Direction Toggle Panel ───────────────── */}
         <div className="glass-panel p-3 flex flex-col">
-          <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-            Tower Beam Direction
-          </h3>
+          <div className="flex items-center justify-between mb-2 gap-2">
+            <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground">
+              {analysisViewMode === "heatmap" ? "2D Interference Heatmap" : "Tower Beam Direction"}
+            </h3>
+            <button
+              type="button"
+              onClick={() => setAnalysisViewMode((prev) => (prev === "heatmap" ? "beam" : "heatmap"))}
+              className="text-[9px] font-mono px-2 py-1 rounded border border-white/20 bg-white/5 hover:bg-white/10 text-muted-foreground"
+            >
+              Show {analysisViewMode === "heatmap" ? "Beam Direction" : "Interference Heatmap"}
+            </button>
+          </div>
           <div className="flex-1 min-h-0 relative">
-            {isInitialLoadRef.current && (
-              <div className="absolute inset-0 flex items-center justify-center z-10 rounded loading-overlay">
-                <div className="text-center">
-                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2" />
-                  <p className="text-xs text-muted-foreground">Loading…</p>
-                </div>
-              </div>
-            )}
-            {activeBeamSeries.length > 0 ? (
-              <BeamPlot
-                beamPattern={{
-                  angles:       activeBeamSeries[0].angles,
-                  magnitudes:   activeBeamSeries[0].magnitudes,
-                  magnitudesDb: activeBeamSeries[0].magnitudesDb ?? activeBeamSeries[0].magnitudes.map(
-                    m => 20 * Math.log10(Math.max(m, 1e-6))
-                  ),
-                }}
-                beamPatterns={activeBeamSeries.map((s) => ({
-                  id: s.towerId,
-                  angles: s.angles,
-                  magnitudes: s.magnitudes,
-                  magnitudesDb: s.magnitudesDb,
-                  color: s.color,
-                  label: s.label,
-                }))}
+            {analysisViewMode === "heatmap" ? (
+              <HeatmapView
+                data={interferenceHeatmapData}
                 title=""
               />
             ) : (
-              <div className="flex items-center justify-center h-full">
-                <p className="text-xs text-muted-foreground">No beam data</p>
-              </div>
+              <>
+                {isInitialLoadRef.current && (
+                  <div className="absolute inset-0 flex items-center justify-center z-10 rounded loading-overlay">
+                    <div className="text-center">
+                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-2" />
+                      <p className="text-xs text-muted-foreground">Loading…</p>
+                    </div>
+                  </div>
+                )}
+                {activeBeamSeries.length > 0 ? (
+                  <BeamPlot
+                    beamPattern={{
+                      angles:       activeBeamSeries[0].angles,
+                      magnitudes:   activeBeamSeries[0].magnitudes,
+                      magnitudesDb: activeBeamSeries[0].magnitudesDb ?? activeBeamSeries[0].magnitudes.map(
+                        m => 20 * Math.log10(Math.max(m, 1e-6))
+                      ),
+                    }}
+                    beamPatterns={activeBeamSeries.map((s) => ({
+                      id: s.towerId,
+                      angles: s.angles,
+                      magnitudes: s.magnitudes,
+                      magnitudesDb: s.magnitudesDb,
+                      color: s.color,
+                      label: s.label,
+                    }))}
+                    title=""
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-full">
+                    <p className="text-xs text-muted-foreground">No beam data</p>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

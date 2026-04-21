@@ -305,6 +305,50 @@ class Simulator5G(BeamformingEngine):
             weights=self.window.get_weights()
         )[0]
         return af_value
+
+    @staticmethod
+    def _normalized_sinc(x: float) -> float:
+        """Compute normalized sinc = sin(x)/x with sinc(0)=1."""
+        if abs(x) < 1e-12:
+            return 1.0
+        return math.sin(x) / x
+
+    def _compute_split_signal(
+        self,
+        n_allocated: int,
+        n_total: int,
+        distance_m: float,
+        theta_deg: float
+    ) -> float:
+        """Compute split-array signal using distance-decay and sinc beam term.
+
+        Formula:
+            signal = amplitude * (N_allocated/N_total)
+                     * |sinc(N_allocated * pi * spacing * sin(theta) / lambda)|
+                     / distance^2
+
+        Notes:
+            - spacing is represented as physical spacing normalized by wavelength
+              (array.spacing in wavelengths), so spacing/lambda = array.spacing.
+            - theta is the offset from the allocated sub-beam steering angle.
+        """
+        n_alloc = max(1, int(n_allocated))
+        n_tot = max(1, int(n_total))
+        d = max(distance_m, 1e-3)
+        theta_rad = math.radians(theta_deg)
+        spacing_over_lambda = self.array.spacing
+        x = n_alloc * math.pi * spacing_over_lambda * math.sin(theta_rad)
+        beam_term = abs(self._normalized_sinc(x))
+        return self.signal.amplitude * (n_alloc / n_tot) * beam_term / (d * d)
+
+    @staticmethod
+    def _wrap_angle_deg(angle_deg: float) -> float:
+        """Normalize angle to [-180, 180] degrees."""
+        while angle_deg > 180:
+            angle_deg -= 360
+        while angle_deg < -180:
+            angle_deg += 360
+        return angle_deg
     
     def auto_update_tower_params(self) -> None:
         """Auto-steer all towers toward their nearest user.
@@ -409,15 +453,23 @@ class Simulator5G(BeamformingEngine):
         return allocations
 
 
-    def compute_tower_connectivity(self) -> List[TowerConnectivityInfo]:
+    def compute_tower_connectivity(self, element_allocations: Dict[int, List[Dict]] = None) -> List[TowerConnectivityInfo]:
         """Compute connectivity between all towers and users.
         
+        Args:
+           element_allocations: Optional mapping of tower ID to its element allocations.
+                                Used to compute multi-steered gain.
         Returns:
             List of TowerConnectivityInfo for each tower-user pair.
         """
         connectivity = []
+        if element_allocations is None:
+            element_allocations = {}
         
         for tower in self.towers:
+            allocs = element_allocations.get(tower.id, [])
+            steering_angles = self.get_element_steering(tower, allocs) if allocs else None
+            
             for user in self.users:
                 # Distance and angle
                 dx = user.x - tower.x
@@ -430,27 +482,32 @@ class Simulator5G(BeamformingEngine):
                 else:
                     angle_to_user = 0
                 
-                # Angle offset from beam direction
-                angle_offset = angle_to_user - tower.steering_angle_deg
-                
-                # Normalize angle offset to [-180, 180]
-                while angle_offset > 180:
-                    angle_offset -= 360
-                while angle_offset < -180:
-                    angle_offset += 360
-                
-                # Beam gain at user location
-                gain = self._get_beam_gain_at_angle(angle_to_user, tower.steering_angle_deg)
-                
-                # Path loss
+                # Angle offset from nominal beam direction
+                angle_offset = self._wrap_angle_deg(angle_to_user - tower.steering_angle_deg)
+
+                n_total = tower.num_elements if tower.num_elements is not None else self.array.num_elements
+                alloc_for_user = next((a for a in allocs if a.get("user_id") == user.id), None)
+
+                if alloc_for_user is not None:
+                    theta_offset = self._wrap_angle_deg(angle_to_user - float(alloc_for_user.get("angle_deg", 0.0)))
+                    signal_strength = self._compute_split_signal(
+                        n_allocated=int(alloc_for_user.get("num_elements", 1)),
+                        n_total=n_total,
+                        distance_m=distance,
+                        theta_deg=theta_offset
+                    )
+                    gain = abs(self._normalized_sinc(
+                        int(alloc_for_user.get("num_elements", 1))
+                        * math.pi
+                        * self.array.spacing
+                        * math.sin(math.radians(theta_offset))
+                    ))
+                else:
+                    # Unallocated users see leakage from nominal tower beam plus distance decay.
+                    gain = self._get_beam_gain_at_angle(angle_to_user, tower.steering_angle_deg)
+                    signal_strength = self.signal.amplitude * gain / max(distance * distance, 1e-6)
+
                 path_loss_db = self._compute_path_loss(distance)
-                
-                # Received signal strength
-                # Signal = (Gain * Amplitude) / 10^(PL_dB/20)
-                signal_strength = (gain * self.signal.amplitude) / (10 ** (path_loss_db / 20))
-                
-                # SNR at receiver
-                snr_db = self.noise.snr_db if self.noise.noise_enabled else 100
                 
                 info = TowerConnectivityInfo(
                     tower_id=tower.id,
@@ -466,15 +523,24 @@ class Simulator5G(BeamformingEngine):
         
         return connectivity
     
+    def get_element_steering(self, tower: Tower, allocations: List[Dict]) -> List[float]:
+        """Get per-element steering angles for a tower given element allocations."""
+        n_elem = tower.num_elements if tower.num_elements is not None else self.array.num_elements
+        steering = [tower.steering_angle_deg] * n_elem
+        for alloc in allocations:
+            for idx in range(alloc["element_start"], alloc["element_end"]):
+                if idx < n_elem:
+                    steering[idx] = alloc["angle_deg"]
+        return steering
+
     def compute_user_connections(
         self,
         current_connections: Optional[Dict[int, int]] = None
     ) -> Dict[int, Optional[int]]:
         """Determine which tower each user connects to (one tower per user).
 
-        Uses max signal-strength selection with hysteresis: a user stays with
-        its current tower unless a competing tower offers HANDOFF_MARGIN_DB
-        dB more signal, preventing rapid ping-pong at cell boundaries.
+        Uses ideal path loss (omni tracking) to avoid dropping users due to 
+        momentary misaligned narrow beams. Applies hysteresis to prevent ping-pong.
 
         Args:
             current_connections: Optional map of {user_id: tower_id} from the
@@ -483,11 +549,22 @@ class Simulator5G(BeamformingEngine):
         Returns:
             Dict mapping user_id -> tower_id (or None if no tower in range).
         """
-        # Build per-user signal map:  {user_id: {tower_id: signal_linear}}
+        # Build per-user signal map using optimal 1.0 gain
         signal_map: Dict[int, Dict[int, float]] = {u.id: {} for u in self.users}
 
-        for conn in self.compute_tower_connectivity():
-            signal_map[conn.user_id][conn.tower_id] = conn.signal_strength
+        for tower in self.towers:
+            for user in self.users:
+                dx = user.x - tower.x
+                dy = user.y - tower.y
+                distance = math.sqrt(dx * dx + dy * dy)
+                if distance > tower.coverage_radius_m:
+                    # Out of visible coverage area: tower is not a valid serving candidate.
+                    continue
+                path_loss_db = self._compute_path_loss(distance)
+                
+                # Ideal tracking gain = 1.0
+                signal = self.signal.amplitude / (10 ** (path_loss_db / 20))
+                signal_map[user.id][tower.id] = signal
 
         connections: Dict[int, Optional[int]] = {}
 
@@ -513,14 +590,17 @@ class Simulator5G(BeamformingEngine):
 
         return connections
 
-    def update_user_signal_strength(self) -> None:
+    def update_user_signal_strength(self, element_allocations: Dict[int, List[Dict]] = None) -> None:
         """Update signal strength for each user based on all towers.
         
         Each user receives signal from all towers; total is sum of all contributions.
+        Computes composite gain if element allocations exist.
         """
+        if element_allocations is None:
+            element_allocations = {}
+            
         for user in self.users:
             total_signal = 0.0
-
             
             for tower in self.towers:
                 dx = user.x - tower.x
@@ -532,14 +612,21 @@ class Simulator5G(BeamformingEngine):
                 else:
                     angle_to_user = 0
                 
-                # Get beam gain at user
-                gain = self._get_beam_gain_at_angle(angle_to_user, tower.steering_angle_deg)
-                
-                # Path loss
-                path_loss_db = self._compute_path_loss(distance)
-                
-                # Signal contribution from this tower
-                signal = (gain * self.signal.amplitude) / (10 ** (path_loss_db / 20))
+                allocs = element_allocations.get(tower.id, [])
+                n_total = tower.num_elements if tower.num_elements is not None else self.array.num_elements
+                alloc_for_user = next((a for a in allocs if a.get("user_id") == user.id), None)
+
+                if alloc_for_user is not None:
+                    theta_offset = self._wrap_angle_deg(angle_to_user - float(alloc_for_user.get("angle_deg", 0.0)))
+                    signal = self._compute_split_signal(
+                        n_allocated=int(alloc_for_user.get("num_elements", 1)),
+                        n_total=n_total,
+                        distance_m=distance,
+                        theta_deg=theta_offset
+                    )
+                else:
+                    gain = self._get_beam_gain_at_angle(angle_to_user, tower.steering_angle_deg)
+                    signal = self.signal.amplitude * gain / max(distance * distance, 1e-6)
                 total_signal += signal
             
             user.signal_strength = total_signal
@@ -563,54 +650,55 @@ class Simulator5G(BeamformingEngine):
         Returns:
             FiveGResult with towers, users, connectivity, and beam patterns.
         """
-        # Auto-steer if enabled
-        if auto_steer:
-            self.auto_update_tower_params()
-        
-        # Update noise settings
+        # 1. Update noise settings
         if enable_noise:
             self.noise.enable_noise()
         else:
             self.noise.disable_noise()
-        
-        # Update signal strength for all users
-        self.update_user_signal_strength()
-        
-        # Compute full connectivity map (all tower–user pairs)
-        connectivity = self.compute_tower_connectivity()
 
-        # Determine which single tower each user is connected to (with hysteresis)
+        # 2. Determine which single tower each user is connected to (ideal path loss hysteresis)
         user_connections = self.compute_user_connections(current_connections)
         for user in self.users:
             user.connected_tower_id = user_connections.get(user.id)
 
-        # Compute element allocations (split per shared-tower users)
+        # 3. Compute element allocations (split per shared-tower users)
         element_allocations = self.compute_element_allocations(user_connections)
+        
+        # 4. Auto-steer nominal steering angle if enabled
+        if auto_steer:
+            self.auto_update_tower_params()
+        
+        # 5. Update signal strength for all users using true element allocations
+        self.update_user_signal_strength(element_allocations)
+        
+        # 6. Compute full connectivity map
+        connectivity = self.compute_tower_connectivity(element_allocations)
 
-        # Generate beam patterns for each tower (using per-tower overrides when set)
+        # Generate beam patterns for each tower
         beam_patterns = []
-        # Save simulator-wide defaults for clean restore
         default_array  = self.array
         default_freq   = self.signal.frequency
         default_window = self.window
 
         for tower in self.towers:
-            # Resolve effective params for this tower
             n_elem = tower.num_elements if tower.num_elements is not None else default_array.num_elements
             freq   = tower.frequency    if tower.frequency    is not None else default_freq
             overriding = (n_elem != default_array.num_elements or freq != default_freq)
 
             if overriding:
-                # Swap to a fresh array+window pair for this tower's computation
                 self.array         = ArrayModel(n_elem, default_array.spacing, freq,
                                                default_array.amplitude, self.speed_of_light)
                 self.signal.frequency = freq
                 self.window        = WindowFunction(default_window.window_type, n_elem)
 
+            allocs = element_allocations.get(tower.id, [])
+            steering_angles = self.get_element_steering(tower, allocs) if allocs else None
+
             beam_result = self.run_simulation(
                 steering_angle_deg=tower.steering_angle_deg,
                 enable_noise=enable_noise,
-                grid_size=grid_size
+                grid_size=grid_size,
+                steering_angles_deg=steering_angles
             )
 
             if overriding:

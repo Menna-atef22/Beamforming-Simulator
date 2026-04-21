@@ -114,7 +114,8 @@ class BeamformingEngine:
     def compute_beam_pattern(
         self,
         steering_angle_deg: float,
-        angle_step: float = None
+        angle_step: float = None,
+        steering_angles_deg: List[float] = None
     ) -> BeamPattern:
         """Compute beam pattern (magnitude vs angle) at given steering angle.
         
@@ -150,11 +151,18 @@ class BeamformingEngine:
             angle_deg = -90.0 + i * angle_step
             
             # Compute array factor at this angle with steering
-            af_mag = self.array.compute_af(
-                angles_deg=[angle_deg],
-                steering_angle_deg=steering_angle_deg,
-                weights=self.window.get_weights()
-            )[0]
+            if steering_angles_deg is not None:
+                af_mag = self.array.compute_multi_steered_af(
+                    angles_deg=[angle_deg],
+                    steering_angles_deg=steering_angles_deg,
+                    weights=self.window.get_weights()
+                )[0]
+            else:
+                af_mag = self.array.compute_af(
+                    angles_deg=[angle_deg],
+                    steering_angle_deg=steering_angle_deg,
+                    weights=self.window.get_weights()
+                )[0]
             
             angles.append(angle_deg)
             magnitudes.append(af_mag)
@@ -276,7 +284,8 @@ class BeamformingEngine:
         self,
         steering_angle_deg: float,
         depth: float = None,
-        num_samples: int = 80
+        num_samples: int = 80,
+        steering_angles_deg: List[float] = None
     ) -> List[dict]:
         """Compute 1D signal profile (line cut) through beam pattern.
         
@@ -308,8 +317,6 @@ class BeamformingEngine:
         element_positions = self.array.get_element_positions()
         weights = self.window.get_weights()
         
-        steering_angle_rad = math.radians(steering_angle_deg)
-        
         for sample_idx in range(num_samples):
             # Position along horizontal line at given depth
             x_position = -extent + (2 * extent * sample_idx) / (num_samples - 1)
@@ -327,6 +334,9 @@ class BeamformingEngine:
                 
                 if distance < 1e-6:
                     continue
+                
+                steer = steering_angles_deg[n] if steering_angles_deg is not None else steering_angle_deg
+                steering_angle_rad = math.radians(steer)
                 
                 # phase_n = -2π * (x_n*sin(theta) + y_n*cos(theta)) / λ
                 steering_phase = -2.0 * math.pi * (
@@ -361,7 +371,8 @@ class BeamformingEngine:
         enable_noise: bool = False,
         grid_size: int = None,
         angle_step: float = None,
-        profile_depth: float = None
+        profile_depth: float = None,
+        steering_angles_deg: List[float] = None
     ) -> BeamformingResult:
         """Execute complete beamforming simulation.
         
@@ -399,7 +410,7 @@ class BeamformingEngine:
             raise ValueError("profile_depth must be > 0")
         
         # Compute steered beam pattern
-        beam_pattern = self.compute_beam_pattern(steering_angle_deg, angle_step)
+        beam_pattern = self.compute_beam_pattern(steering_angle_deg, angle_step, steering_angles_deg)
         
         # Compute broadside beam pattern (reference)
         beam_pattern_no_steer = self.compute_beam_pattern(0, angle_step)
@@ -418,7 +429,8 @@ class BeamformingEngine:
         # Compute 1D signal profile
         signal_profile = self._compute_signal_profile(
             steering_angle_deg,
-            depth=profile_depth
+            depth=profile_depth,
+            steering_angles_deg=steering_angles_deg
         )
         
         return BeamformingResult(

@@ -1,5 +1,5 @@
 .heatmap-canvas {
-  image-rendering: pixelated;
+  image-rendering: auto;
   object-fit: contain;
 }
 

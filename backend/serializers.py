@@ -67,9 +67,16 @@ def serialize_5g_result(result) -> Dict[str, Any]:
                 magnitudes = getattr(bp, 'magnitudes', [])
             beam_patterns.append({
                 "tower_id": bp.get("tower_id") if isinstance(bp, dict) else getattr(bp, "tower_id", 0),
+                "tower_x": bp.get("tower_x") if isinstance(bp, dict) else getattr(bp, "tower_x", 0.0),
+                "tower_y": bp.get("tower_y") if isinstance(bp, dict) else getattr(bp, "tower_y", 0.0),
+                "steering_angle_deg": bp.get("steering_angle_deg") if isinstance(bp, dict) else getattr(bp, "steering_angle_deg", 0.0),
+                "num_elements": bp.get("num_elements") if isinstance(bp, dict) else getattr(bp, "num_elements", 0),
+                "frequency": bp.get("frequency") if isinstance(bp, dict) else getattr(bp, "frequency", 0.0),
+                "element_allocations": bp.get("element_allocations", []) if isinstance(bp, dict) else getattr(bp, "element_allocations", []),
                 "angles": bp.get("angles", []) if isinstance(bp, dict) else getattr(bp, "angles", []),
                 "magnitudes": magnitudes,
-                "magnitudes_db": [20 * math.log10(max(m, 1e-6)) for m in magnitudes]
+                "magnitudes_db": [20 * math.log10(max(m, 1e-6)) for m in magnitudes],
+                "metrics": bp.get("metrics", {}) if isinstance(bp, dict) else getattr(bp, "metrics", {})
             })
     
     return {
