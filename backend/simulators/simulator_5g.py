@@ -33,8 +33,14 @@ class Tower:
     beamwidth_deg: float = 30.0
     max_gain_db: float = 20.0
     coverage_radius_m: float = 5.0
+    # Per-tower overrides (None = use simulator defaults)
     num_elements: Optional[int] = None
-    frequency: Optional[float] = None
+    spacing: Optional[float] = None           # in wavelengths (d/λ)
+    frequency: Optional[float] = None         # Hz
+    amplitude: Optional[float] = None         # linear
+    snr_db: Optional[float] = None            # dB
+    window_type: Optional[str] = None         # e.g. "rectangular", "hamming"
+    apodization_enabled: Optional[bool] = None
 
 
 @dataclass
@@ -318,7 +324,10 @@ class Simulator5G(BeamformingEngine):
         n_allocated: int,
         n_total: int,
         distance_m: float,
-        theta_deg: float
+        theta_deg: float,
+        spacing_over_lambda: float,
+        wavelength_m: float,
+        amplitude: float,
     ) -> float:
         """Compute split-array signal using distance-decay and sinc beam term.
 
@@ -328,18 +337,35 @@ class Simulator5G(BeamformingEngine):
                      / distance^2
 
         Notes:
-            - spacing is represented as physical spacing normalized by wavelength
-              (array.spacing in wavelengths), so spacing/lambda = array.spacing.
+            - spacing_over_lambda corresponds to d/λ.
             - theta is the offset from the allocated sub-beam steering angle.
         """
         n_alloc = max(1, int(n_allocated))
         n_tot = max(1, int(n_total))
         d = max(distance_m, 1e-3)
         theta_rad = math.radians(theta_deg)
-        spacing_over_lambda = self.array.spacing
-        x = n_alloc * math.pi * spacing_over_lambda * math.sin(theta_rad)
+        x = n_alloc * math.pi * float(spacing_over_lambda) * math.sin(theta_rad)
         beam_term = abs(self._normalized_sinc(x))
-        return self.signal.amplitude * (n_alloc / n_tot) * beam_term / (d * d)
+        return float(amplitude) * (n_alloc / n_tot) * beam_term / (d * d)
+
+    def _tower_effective_params(self, tower: Tower) -> Dict[str, float | str | bool | int]:
+        """Resolve effective per-tower parameters with simulator defaults."""
+        n_elem = tower.num_elements if tower.num_elements is not None else self.array.num_elements
+        spacing = tower.spacing if tower.spacing is not None else self.array.spacing
+        freq = tower.frequency if tower.frequency is not None else self.signal.frequency
+        amp = tower.amplitude if tower.amplitude is not None else self.signal.amplitude
+        snr = tower.snr_db if tower.snr_db is not None else self.noise.snr_db
+        win = tower.window_type if tower.window_type is not None else self.window.window_type
+        apod = tower.apodization_enabled if tower.apodization_enabled is not None else True
+        return {
+            "num_elements": int(n_elem),
+            "spacing": float(spacing),
+            "frequency": float(freq),
+            "amplitude": float(amp),
+            "snr_db": float(snr),
+            "window_type": str(win),
+            "apodization_enabled": bool(apod),
+        }
 
     @staticmethod
     def _wrap_angle_deg(angle_deg: float) -> float:
@@ -468,7 +494,11 @@ class Simulator5G(BeamformingEngine):
         
         for tower in self.towers:
             allocs = element_allocations.get(tower.id, [])
-            steering_angles = self.get_element_steering(tower, allocs) if allocs else None
+            eff = self._tower_effective_params(tower)
+            freq = float(eff["frequency"])
+            wavelength_m = self.speed_of_light / max(1.0, freq)
+            spacing_over_lambda = float(eff["spacing"])
+            amplitude = float(eff["amplitude"])
             
             for user in self.users:
                 # Distance and angle
@@ -494,18 +524,21 @@ class Simulator5G(BeamformingEngine):
                         n_allocated=int(alloc_for_user.get("num_elements", 1)),
                         n_total=n_total,
                         distance_m=distance,
-                        theta_deg=theta_offset
+                        theta_deg=theta_offset,
+                        spacing_over_lambda=spacing_over_lambda,
+                        wavelength_m=wavelength_m,
+                        amplitude=amplitude,
                     )
                     gain = abs(self._normalized_sinc(
                         int(alloc_for_user.get("num_elements", 1))
                         * math.pi
-                        * self.array.spacing
+                        * spacing_over_lambda
                         * math.sin(math.radians(theta_offset))
                     ))
                 else:
                     # Unallocated users see leakage from nominal tower beam plus distance decay.
                     gain = self._get_beam_gain_at_angle(angle_to_user, tower.steering_angle_deg)
-                    signal_strength = self.signal.amplitude * gain / max(distance * distance, 1e-6)
+                    signal_strength = amplitude * gain / max(distance * distance, 1e-6)
 
                 path_loss_db = self._compute_path_loss(distance)
                 
@@ -603,6 +636,12 @@ class Simulator5G(BeamformingEngine):
             total_signal = 0.0
             
             for tower in self.towers:
+                eff = self._tower_effective_params(tower)
+                freq = float(eff["frequency"])
+                wavelength_m = self.speed_of_light / max(1.0, freq)
+                spacing_over_lambda = float(eff["spacing"])
+                amplitude = float(eff["amplitude"])
+
                 dx = user.x - tower.x
                 dy = user.y - tower.y
                 distance = math.sqrt(dx * dx + dy * dy)
@@ -622,11 +661,14 @@ class Simulator5G(BeamformingEngine):
                         n_allocated=int(alloc_for_user.get("num_elements", 1)),
                         n_total=n_total,
                         distance_m=distance,
-                        theta_deg=theta_offset
+                        theta_deg=theta_offset,
+                        spacing_over_lambda=spacing_over_lambda,
+                        wavelength_m=wavelength_m,
+                        amplitude=amplitude,
                     )
                 else:
                     gain = self._get_beam_gain_at_angle(angle_to_user, tower.steering_angle_deg)
-                    signal = self.signal.amplitude * gain / max(distance * distance, 1e-6)
+                    signal = amplitude * gain / max(distance * distance, 1e-6)
                 total_signal += signal
             
             user.signal_strength = total_signal
@@ -681,15 +723,32 @@ class Simulator5G(BeamformingEngine):
         default_window = self.window
 
         for tower in self.towers:
-            n_elem = tower.num_elements if tower.num_elements is not None else default_array.num_elements
-            freq   = tower.frequency    if tower.frequency    is not None else default_freq
-            overriding = (n_elem != default_array.num_elements or freq != default_freq)
+            eff = self._tower_effective_params(tower)
+            n_elem = int(eff["num_elements"])
+            freq   = float(eff["frequency"])
+            spacing = float(eff["spacing"])
+            amp     = float(eff["amplitude"])
+            win     = str(eff["window_type"])
+            apod    = bool(eff["apodization_enabled"])
+
+            overriding = (
+                n_elem != default_array.num_elements
+                or abs(freq - default_freq) > 1e-9
+                or abs(spacing - default_array.spacing) > 1e-12
+                or abs(amp - default_array.amplitude) > 1e-12
+                or win != default_window.window_type
+            )
 
             if overriding:
                 self.array         = ArrayModel(n_elem, default_array.spacing, freq,
-                                               default_array.amplitude, self.speed_of_light)
+                                               amp, self.speed_of_light)
+                # spacing override
+                self.array.spacing = spacing
+                # amplitude & frequency override
                 self.signal.frequency = freq
-                self.window        = WindowFunction(default_window.window_type, n_elem)
+                self.signal.amplitude = amp
+                # window override (use rectangular if apodization disabled)
+                self.window = WindowFunction(win if apod else "rectangular", n_elem)
 
             allocs = element_allocations.get(tower.id, [])
             steering_angles = self.get_element_steering(tower, allocs) if allocs else None
@@ -705,6 +764,7 @@ class Simulator5G(BeamformingEngine):
                 # Restore originals
                 self.array            = default_array
                 self.signal.frequency = default_freq
+                self.signal.amplitude = default_array.amplitude
                 self.window           = default_window
 
             beam_patterns.append({

@@ -8,22 +8,25 @@ interface HeatmapViewProps {
 }
 
 function valueToColor(value: number, max: number): [number, number, number] {
-  // Log compression prevents a single hotspot from collapsing the visible field.
-  const safeMax = Math.max(max, 1e-9);
-  const t = Math.min(Math.log1p(Math.max(0, value)) / Math.log1p(safeMax), 1);
-  // dark → deep purple → magenta → pink → white
+  // Intensity heatmap: near-zero should be nearly black.
+  const safeMax = Math.max(max, 1e-12);
+  const v = Math.max(0, value);
+  // Log compression + gamma darkens background.
+  const tLog = Math.min(Math.log1p(v) / Math.log1p(safeMax), 1);
+  const t = Math.pow(tLog, 2.2);
+  // black → deep purple → magenta → pink → white
   if (t < 0.2) {
     const s = t / 0.2;
-    return [Math.round(15 + s * 25), Math.round(8 + s * 8), Math.round(30 + s * 40)];
-  } else if (t < 0.45) {
-    const s = (t - 0.2) / 0.25;
-    return [Math.round(40 + s * 80), Math.round(16 + s * 10), Math.round(70 + s * 50)];
-  } else if (t < 0.7) {
-    const s = (t - 0.45) / 0.25;
-    return [Math.round(120 + s * 80), Math.round(26 + s * 40), Math.round(120 + s * 20)];
+    return [Math.round(2 + s * 18), Math.round(1 + s * 6), Math.round(4 + s * 28)];
+  } else if (t < 0.5) {
+    const s = (t - 0.2) / 0.3;
+    return [Math.round(20 + s * 90), Math.round(7 + s * 18), Math.round(32 + s * 90)];
+  } else if (t < 0.8) {
+    const s = (t - 0.5) / 0.3;
+    return [Math.round(110 + s * 95), Math.round(25 + s * 55), Math.round(122 + s * 50)];
   } else {
-    const s = (t - 0.7) / 0.3;
-    return [Math.round(200 + s * 55), Math.round(66 + s * 140), Math.round(140 + s * 115)];
+    const s = (t - 0.8) / 0.2;
+    return [Math.round(205 + s * 50), Math.round(80 + s * 175), Math.round(172 + s * 83)];
   }
 }
 

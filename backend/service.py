@@ -132,13 +132,25 @@ class SimulationService:
                     tx    = t["x"]                if is_dict else t.x
                     ty    = t["y"]                if is_dict else t.y
                     t_n   = t.get("num_elements")      if is_dict else getattr(t, "num_elements", None)
+                    t_s   = t.get("spacing")           if is_dict else getattr(t, "spacing", None)
                     t_f   = t.get("frequency")         if is_dict else getattr(t, "frequency", None)
+                    t_a   = t.get("amplitude")         if is_dict else getattr(t, "amplitude", None)
+                    t_snr = t.get("snr_db")            if is_dict else getattr(t, "snr_db", None)
+                    t_w   = t.get("window_type")       if is_dict else getattr(t, "window_type", None)
+                    t_ap  = t.get("apodization_enabled") if is_dict else getattr(t, "apodization_enabled", None)
+                    t_sa  = t.get("steering_angle_deg") if is_dict else getattr(t, "steering_angle_deg", None)
                     t_r   = t.get("coverage_radius_m") if is_dict else getattr(t, "coverage_radius_m", None)
                     simulator.add_tower(tower_id=tid, x=tx, y=ty)
                     # Apply per-tower overrides onto the just-added Tower object
                     added = simulator.towers[-1]
                     if t_n is not None:      added.num_elements      = int(t_n)
+                    if t_s is not None:      added.spacing           = float(t_s)
                     if t_f is not None:      added.frequency         = float(t_f)
+                    if t_a is not None:      added.amplitude         = float(t_a)
+                    if t_snr is not None:    added.snr_db            = float(t_snr)
+                    if t_w is not None:      added.window_type       = str(t_w)
+                    if t_ap is not None:     added.apodization_enabled = bool(t_ap)
+                    if t_sa is not None:     added.steering_angle_deg = float(t_sa)
                     if t_r is not None:      added.coverage_radius_m = float(t_r)
 
             

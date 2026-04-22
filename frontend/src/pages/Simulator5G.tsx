@@ -67,7 +67,9 @@ const defaultParams: BeamformingParams & Record<string, any> = {
   noiseEnabled: true,
   apodizationEnabled: false,
   frequency: 28e9,
-  autoSteer: true,
+  geometry: "linear",
+  radius: 50,
+  autoSteer: false,
   gridSize: 80,
 };
 
@@ -82,12 +84,23 @@ export default function Simulator5G() {
     DEFAULT_TOWERS.map(t => ({
       ...t,
       coverage_radius_m: 5.0,
-      num_elements: 16,
-      frequency: 28e9,
+      num_elements: defaultParams.numElements,
+      frequency: defaultParams.frequency,
+      spacing: defaultParams.spacing,
+      wavelength: defaultParams.wavelength,
+      steering_angle_deg: defaultParams.steeringAngleDeg,
+      amplitude: defaultParams.amplitude,
+      snr_db: defaultParams.snrDb,
+      window_type: defaultParams.windowType,
+      noise_enabled: defaultParams.noiseEnabled,
+      apodization_enabled: defaultParams.apodizationEnabled,
+      geometry: defaultParams.geometry ?? "linear",
+      radius: Number.isFinite(Number(defaultParams.radius)) ? Number(defaultParams.radius) : 50,
     }))
   );
   const [selectedUserId, setSelectedUserId]   = useState<number | null>(null);
   const [selectedTowerId, setSelectedTowerId] = useState<number | null>(null);
+  const [panelTowerId, setPanelTowerId] = useState<number>(1);
   // Canvas-space anchor for tower popup (in viewport px)
   const [towerPopupAnchor, setTowerPopupAnchor] = useState<{ x: number; y: number } | null>(null);
   const [analysisViewMode, setAnalysisViewMode] = useState<"heatmap" | "beam">("heatmap");
@@ -126,6 +139,21 @@ export default function Simulator5G() {
       ro?.disconnect();
       window.removeEventListener("resize", updateSize);
     };
+  }, []);
+
+  // Ensure T1 starts with the requested defaults.
+  useEffect(() => {
+    setLocalTowers((prev) => prev.map((t) => {
+      if (t.id !== 1) return t;
+      return {
+        ...t,
+        num_elements: 16,
+        spacing: 0.5,
+        geometry: "linear",
+      } as any;
+    }));
+    // run once
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ─── Run simulation whenever debounced params OR user positions change ────
@@ -226,8 +254,80 @@ export default function Simulator5G() {
     return () => window.removeEventListener("keydown", handleKey);
   }, [selectedUserId, triggerSimAfterMove]);
 
+  const towerToControlParams = useCallback((tower?: TowerParams | null): BeamformingParams & Record<string, any> => ({
+    ...defaultParams,
+    numElements: Number(tower?.num_elements ?? defaultParams.numElements),
+    spacing: Number((tower as any)?.spacing ?? defaultParams.spacing),
+    wavelength: Number((tower as any)?.wavelength ?? defaultParams.wavelength),
+    steeringAngleDeg: Number((tower as any)?.steering_angle_deg ?? defaultParams.steeringAngleDeg),
+    amplitude: Number((tower as any)?.amplitude ?? defaultParams.amplitude),
+    snrDb: Number((tower as any)?.snr_db ?? defaultParams.snrDb),
+    windowType: ((tower as any)?.window_type ?? defaultParams.windowType),
+    noiseEnabled: Boolean((tower as any)?.noise_enabled ?? defaultParams.noiseEnabled),
+    apodizationEnabled: Boolean((tower as any)?.apodization_enabled ?? defaultParams.apodizationEnabled),
+    frequency: Number((tower as any)?.frequency ?? defaultParams.frequency),
+    geometry: ((tower as any)?.geometry ?? defaultParams.geometry),
+    radius: Number((tower as any)?.radius ?? defaultParams.radius),
+    autoSteer: false,
+    gridSize: Number((tower as any)?.grid_size ?? defaultParams.gridSize),
+  }), []);
+
+  useEffect(() => {
+    const tower = localTowers.find((t) => t.id === panelTowerId);
+    if (!tower) return;
+    setParams((prev) => {
+      const next = towerToControlParams(tower);
+      const changed =
+        prev.numElements !== next.numElements ||
+        prev.spacing !== next.spacing ||
+        prev.wavelength !== next.wavelength ||
+        prev.steeringAngleDeg !== next.steeringAngleDeg ||
+        prev.amplitude !== next.amplitude ||
+        prev.snrDb !== next.snrDb ||
+        prev.windowType !== next.windowType ||
+        prev.noiseEnabled !== next.noiseEnabled ||
+        prev.apodizationEnabled !== next.apodizationEnabled ||
+        prev.frequency !== next.frequency ||
+        prev.geometry !== next.geometry ||
+        prev.radius !== next.radius;
+      return changed ? next : prev;
+    });
+  }, [panelTowerId, localTowers, towerToControlParams]);
+
   const updateParam = <K extends keyof BeamformingParams>(key: K, value: BeamformingParams[K]) => {
     setParams((prev) => ({ ...prev, [key]: value }));
+
+    setLocalTowers((prev) => prev.map((tower) => {
+      if (tower.id !== panelTowerId) return tower;
+      switch (key) {
+        case "numElements":
+          return { ...tower, num_elements: Number(value) };
+        case "spacing":
+          return { ...tower, spacing: Number(value) };
+        case "wavelength":
+          return { ...tower, wavelength: Number(value) };
+        case "steeringAngleDeg":
+          return { ...tower, steering_angle_deg: Number(value) };
+        case "amplitude":
+          return { ...tower, amplitude: Number(value) };
+        case "snrDb":
+          return { ...tower, snr_db: Number(value) };
+        case "windowType":
+          return { ...tower, window_type: value as any };
+        case "noiseEnabled":
+          return { ...tower, noise_enabled: Boolean(value) };
+        case "apodizationEnabled":
+          return { ...tower, apodization_enabled: Boolean(value) };
+        case "frequency":
+          return { ...tower, frequency: Number(value) };
+        case "geometry":
+          return { ...tower, geometry: value as any };
+        case "radius":
+          return { ...tower, radius: Number(value) };
+        default:
+          return tower;
+      }
+    }));
   };
 
   // ─── Extract 5G data from API response for charts ─────────────────────────
@@ -338,62 +438,6 @@ export default function Simulator5G() {
     return merged;
   }, [localUsers, effectiveConnectedTowerByUserId, nearestInRangeTowerByUserId]);
 
-  const activeLinkTelemetry = useMemo(() => {
-    const connectedUsers = localUsers.filter((u) => liveConnectedTowerByUserId.get(u.id) != null);
-    if (connectedUsers.length === 0) return null;
-
-    // Priority: selected user if connected, otherwise first connected user.
-    const activeUser = (
-      selectedUserId != null
-        ? connectedUsers.find((u) => u.id === selectedUserId)
-        : null
-    ) ?? connectedUsers[0];
-    if (!activeUser) return null;
-
-    const towerId = liveConnectedTowerByUserId.get(activeUser.id);
-    if (towerId == null) return null;
-    const tower = localTowers.find((t) => t.id === towerId);
-    if (!tower) return null;
-
-    const dx = activeUser.x - tower.x;
-    const dy = activeUser.y - tower.y;
-    const thetaRad = Math.atan2(dy, dx); // requested convention: atan2(user.y - tower.y, user.x - tower.x)
-    const steeringDeg = (thetaRad * 180) / Math.PI;
-
-    const c = 3e8;
-    const freqHz = Number(tower.frequency ?? params.frequency ?? 28e9);
-    const wavelength = c / Math.max(1.0, freqHz);
-    const phaseShiftRad = (2 * Math.PI * Number(params.spacing ?? 0.5) * Math.sin(thetaRad)) / wavelength;
-
-    return {
-      userId: activeUser.id,
-      towerId,
-      steeringDeg,
-      wavelength,
-      phaseShiftRad,
-    };
-  }, [localUsers, localTowers, liveConnectedTowerByUserId, selectedUserId, params.frequency, params.spacing]);
-
-  // Keep left-panel steering + phase-shift telemetry synchronized with the active link.
-  useEffect(() => {
-    if (!activeLinkTelemetry) return;
-    setParams((prev) => {
-      const nextSteering = activeLinkTelemetry.steeringDeg;
-      const nextWavelength = activeLinkTelemetry.wavelength;
-      if (
-        Math.abs((prev.steeringAngleDeg ?? 0) - nextSteering) < 1e-3 &&
-        Math.abs((prev.wavelength ?? 1.0) - nextWavelength) < 1e-9
-      ) {
-        return prev;
-      }
-      return {
-        ...prev,
-        steeringAngleDeg: nextSteering,
-        wavelength: nextWavelength,
-      };
-    });
-  }, [activeLinkTelemetry]);
-
   // Radius-aware viewport fit so all towers and coverage circles remain fully visible.
   const mapViewport = useMemo(() => {
     let minX = WORLD_MIN_X;
@@ -439,13 +483,6 @@ export default function Simulator5G() {
     return CANVAS_H - ((y - mapViewport.minY) / spanY) * CANVAS_H;
   }, [mapViewport]);
 
-  // Beam wave animation tuning
-  const DASH_LENGTH_PX = 14;
-  const DASH_GAP_PX = 10;
-  const DASH_SPEED_PX_PER_SEC = 90;
-  const PULSE_SPACING_PX = 68;
-  const PULSE_SPEED_PX_PER_SEC = 170;
-
   // ─── Canvas click → select tower (priority) or user ─────────────────────
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -468,6 +505,7 @@ export default function Simulator5G() {
 
     if (bestTowerId !== null) {
       setSelectedTowerId(bestTowerId);
+      setPanelTowerId(bestTowerId);
       setSelectedUserId(null);
       // Anchor popup to viewport coordinates of the tower icon
       const clickedTower = localTowers.find(t => t.id === bestTowerId)!;
@@ -519,11 +557,79 @@ export default function Simulator5G() {
     const mToPxX = CANVAS_W / Math.max(1e-6, (mapViewport.maxX - mapViewport.minX));
     const mToPxY = CANVAS_H / Math.max(1e-6, (mapViewport.maxY - mapViewport.minY));
     const mToPx = (mToPxX + mToPxY) / 2;
-    const arrayGeometry = (params.geometry ?? "linear") as "linear" | "curved";
-    const elementCount = Math.max(2, Math.min(64, Math.round(Number(params.numElements ?? 16))));
-    const spacingLambda = Number(params.spacing ?? 0.5);
-    const wavelengthMeters = Number(params.wavelength ?? 1.0);
-    const physicalSpacingMeters = spacingLambda * wavelengthMeters;
+
+    const besselI0 = (x: number) => {
+      let sum = 1;
+      let term = 1;
+      const half = x / 2;
+      for (let k = 1; k < 16; k++) {
+        term *= (half * half) / (k * k);
+        sum += term;
+      }
+      return sum;
+    };
+
+    const buildWindowWeights = (count: number, wTypeInput: string, apodizationEnabled: boolean) => {
+      const n = Math.max(1, count);
+      const wType = String(wTypeInput ?? "rectangular").toLowerCase();
+      if (n === 1) return [1];
+
+      if (!apodizationEnabled || wType === "rectangular") {
+        return Array.from({ length: n }, () => 1);
+      }
+
+      if (wType === "hamming") {
+        return Array.from({ length: n }, (_, i) => 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (n - 1)));
+      }
+      if (wType === "hanning") {
+        return Array.from({ length: n }, (_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1)));
+      }
+      if (wType === "blackman") {
+        return Array.from(
+          { length: n },
+          (_, i) => 0.42 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1)) + 0.08 * Math.cos((4 * Math.PI * i) / (n - 1))
+        );
+      }
+      if (wType === "kaiser") {
+        const beta = 6.0;
+        const denom = besselI0(beta);
+        return Array.from({ length: n }, (_, i) => {
+          const t = (2 * i) / (n - 1) - 1;
+          return besselI0(beta * Math.sqrt(Math.max(0, 1 - t * t))) / Math.max(denom, 1e-12);
+        });
+      }
+      return Array.from({ length: n }, () => 1);
+    };
+
+    const computeArrayFactorNorm = (
+      thetaDeg: number,
+      steeringDeg: number,
+      elemCount: number,
+      spacingOverLambda: number,
+      weights: number[]
+    ) => {
+      const th = (thetaDeg * Math.PI) / 180;
+      const th0 = (steeringDeg * Math.PI) / 180;
+      const d = spacingOverLambda;
+      const center = (elemCount - 1) / 2;
+      const psi = 2 * Math.PI * d * (Math.sin(th) - Math.sin(th0));
+
+      let re = 0;
+      let im = 0;
+      let wSum = 0;
+      for (let n = 0; n < elemCount; n++) {
+        const w = weights[n] ?? 1;
+        const phase = psi * (n - center);
+        re += w * Math.cos(phase);
+        im += w * Math.sin(phase);
+        wSum += Math.abs(w);
+      }
+
+      const mag = Math.hypot(re, im);
+      return mag / Math.max(wSum, 1e-9);
+    };
+
+    const lobeAngles = Array.from({ length: 181 }, (_, i) => i - 90);
 
     let rafId = 0;
 
@@ -579,28 +685,34 @@ export default function Simulator5G() {
         const tx = toCanvasX(tower.x);
         const ty = toCanvasY(tower.y);
         const hue = TOWER_COLORS[tower.id]?.hue ?? DEFAULT_TOWER_HUE;
+        const towerGeometry = ((tower as any).geometry ?? "linear") as "linear" | "curved";
+        const towerElemCount = Math.max(2, Math.min(64, Math.round(Number((tower as any).num_elements ?? 16))));
+        const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
+        const towerFreqHz = Number((tower as any).frequency ?? 28e9);
+        const towerWavelengthMeters = Number((tower as any).wavelength ?? (3e8 / Math.max(1.0, towerFreqHz)));
+        const towerPhysicalSpacingMeters = towerSpacingLambda * towerWavelengthMeters;
 
         // Keep aperture centered at the tower point.
         const baseY = ty;
 
         // Scale aperture from physical spacing x (N-1), with a strict safety cap.
         // Keep dotted element line clearly shorter than tower-to-tower spacing.
-        const desiredAperturePx = physicalSpacingMeters * Math.max(1, elementCount - 1) * mToPx * 0.45;
+        const desiredAperturePx = towerPhysicalSpacingMeters * Math.max(1, towerElemCount - 1) * mToPx * 0.45;
         const aperturePx = Math.max(8, Math.min(desiredAperturePx, CANVAS_W * 0.18));
-        const spacingPx = elementCount > 1 ? (aperturePx / (elementCount - 1)) : 0;
+        const spacingPx = towerElemCount > 1 ? (aperturePx / (towerElemCount - 1)) : 0;
 
         const elements: Array<{ x: number; y: number }> = [];
 
-        if (arrayGeometry === "curved") {
-          const curvatureInput = Number(params.radius ?? 1.4);
+        if (towerGeometry === "curved") {
+          const curvatureInput = Number((tower as any).radius ?? 1.4);
           const arcRadius = Math.max(18, Math.min(52, 12 + curvatureInput * 10));
           const totalSweep = Math.min(Math.PI * 0.96, (aperturePx / Math.max(1, arcRadius)));
           const centerX = tx;
           const centerY = baseY + arcRadius;
           const a0 = -totalSweep / 2;
 
-          for (let i = 0; i < elementCount; i++) {
-            const t = elementCount === 1 ? 0 : i / (elementCount - 1);
+          for (let i = 0; i < towerElemCount; i++) {
+            const t = towerElemCount === 1 ? 0 : i / (towerElemCount - 1);
             const a = a0 + t * totalSweep;
             elements.push({
               x: centerX + arcRadius * Math.sin(a),
@@ -652,8 +764,8 @@ export default function Simulator5G() {
           // Aperture axis = beam axis rotated +90° (perpendicular line through tower center).
           const axisX = -beamDirY;
           const axisY = beamDirX;
-          const centerOffset = (elementCount - 1) / 2;
-          for (let i = 0; i < elementCount; i++) {
+          const centerOffset = (towerElemCount - 1) / 2;
+          for (let i = 0; i < towerElemCount; i++) {
             const offset = (i - centerOffset) * spacingPx;
             elements.push({
               x: tx + axisX * offset,
@@ -736,120 +848,6 @@ export default function Simulator5G() {
         }
       }
 
-      // Connected beam lines with moving dashes and traveling pulse dots
-      const dashOffset = -((timeMs / 1000) * DASH_SPEED_PX_PER_SEC) % (DASH_LENGTH_PX + DASH_GAP_PX);
-      const pulseTravel = ((timeMs / 1000) * PULSE_SPEED_PX_PER_SEC) % PULSE_SPACING_PX;
-
-      for (const user of localUsers) {
-        const connTowId = liveConnectedTowerByUserId.get(user.id) ?? null;
-        if (connTowId === null) continue;
-
-        const tower = localTowers.find((t) => t.id === connTowId);
-        if (!tower) continue;
-
-        // Use sub-array centroid if this tower splits elements; else full array center
-        const subKey = Number(`${connTowId}0000${user.id}`);
-        const subCenter = towerArrayCenterById.get(subKey);
-        const towerCenter = subCenter ?? towerArrayCenterById.get(connTowId);
-        const tx = towerCenter?.x ?? toCanvasX(tower.x);
-        const ty = towerCenter?.y ?? toCanvasY(tower.y);
-        const ux = toCanvasX(user.x), uy = toCanvasY(user.y);
-        const towerAllocs = elementAllocsByTowerId.get(connTowId) ?? [];
-        const splitAlloc = towerAllocs.length > 1
-          ? towerAllocs.find((a) => a.user_id === user.id)
-          : null;
-        const hue = splitAlloc
-          ? (USER_COLORS[user.id]?.hue ?? DEFAULT_USER_HUE)
-          : (TOWER_COLORS[connTowId]?.hue ?? DEFAULT_TOWER_HUE);
-        const isSelectedUser = user.id === selectedUserId;
-
-        const dx = ux - tx;
-        const dy = uy - ty;
-        const len = Math.hypot(dx, dy);
-        if (len < 1) continue;
-
-        const dirX = dx / len;
-        const dirY = dy / len;
-
-        // Per-element faint wave arcs (individual emissions)
-        const emitterElements = towerElementsById.get(connTowId) ?? [{ x: tx, y: ty }];
-        const wavePeriodPx = 46;
-        const waveTravelPx = ((timeMs / 1000) * (PULSE_SPEED_PX_PER_SEC * 0.58)) % wavePeriodPx;
-        for (let ei = 0; ei < emitterElements.length; ei++) {
-          const em = emitterElements[ei];
-          const exToUser = ux - em.x;
-          const eyToUser = uy - em.y;
-          const angle = Math.atan2(eyToUser, exToUser);
-          const spread = isSelectedUser ? 0.42 : 0.34;
-
-          for (let k = 0; k < 3; k++) {
-            const r = 7 + ((waveTravelPx + ei * 2 + k * (wavePeriodPx / 3)) % wavePeriodPx);
-            const alpha = (isSelectedUser ? 0.28 : 0.18) * Math.max(0.35, 1 - r / 64);
-            ctx.strokeStyle = `hsla(${hue},90%,68%,${alpha})`;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.arc(em.x, em.y, r, angle - spread, angle + spread);
-            ctx.stroke();
-          }
-        }
-
-        // Bold constructive beam (sum of individual emissions)
-        const sumGrad = ctx.createLinearGradient(tx, ty, ux, uy);
-        sumGrad.addColorStop(0, `hsla(${hue},92%,70%,${isSelectedUser ? 0.55 : 0.35})`);
-        sumGrad.addColorStop(1, `hsla(${hue},82%,68%,${isSelectedUser ? 0.26 : 0.14})`);
-        ctx.strokeStyle = sumGrad;
-        ctx.lineWidth = isSelectedUser ? 5.4 : 4.0;
-        ctx.setLineDash([]);
-        ctx.beginPath();
-        ctx.moveTo(tx, ty);
-        ctx.lineTo(ux, uy);
-        ctx.stroke();
-
-        const lineGrad = ctx.createLinearGradient(tx, ty, ux, uy);
-        lineGrad.addColorStop(0, `hsla(${hue},88%,62%,${isSelectedUser ? 0.95 : 0.65})`);
-        lineGrad.addColorStop(1, `hsla(${hue},72%,65%,${isSelectedUser ? 0.45 : 0.22})`);
-        ctx.strokeStyle = lineGrad;
-        ctx.lineWidth = isSelectedUser ? 3.2 : 2.2;
-        ctx.setLineDash([DASH_LENGTH_PX, DASH_GAP_PX]);
-        ctx.lineDashOffset = dashOffset;
-        ctx.beginPath();
-        ctx.moveTo(tx, ty);
-        ctx.lineTo(ux, uy);
-        ctx.stroke();
-
-        // Draw rippling pulse packets moving tower -> user
-        const pulseRadius = isSelectedUser ? 2.8 : 2.2;
-        const glowRadius = isSelectedUser ? 6.8 : 5.6;
-        for (let base = -PULSE_SPACING_PX * 2; base <= len + PULSE_SPACING_PX; base += PULSE_SPACING_PX) {
-          const dist = base + pulseTravel;
-          if (dist < 0 || dist > len) continue;
-
-          const px = tx + dirX * dist;
-          const py = ty + dirY * dist;
-
-          const pulseAlpha = isSelectedUser ? 0.9 : 0.72;
-          ctx.fillStyle = `hsla(${hue},95%,72%,${pulseAlpha})`;
-          ctx.beginPath();
-          ctx.arc(px, py, pulseRadius, 0, Math.PI * 2);
-          ctx.fill();
-
-          ctx.strokeStyle = `hsla(${hue},90%,70%,${isSelectedUser ? 0.35 : 0.24})`;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.arc(px, py, glowRadius, 0, Math.PI * 2);
-          ctx.stroke();
-        }
-
-        // Endpoint focus near connected user
-        ctx.setLineDash([]);
-        ctx.lineDashOffset = 0;
-        ctx.strokeStyle = `hsla(${hue},90%,70%,${isSelectedUser ? 0.42 : 0.24})`;
-        ctx.lineWidth = isSelectedUser ? 2.2 : 1.4;
-        ctx.beginPath();
-        ctx.arc(ux, uy, isSelectedUser ? 9 : 7, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-
       ctx.setLineDash([]);
       ctx.lineDashOffset = 0;
 
@@ -885,7 +883,8 @@ export default function Simulator5G() {
         } else if (connectedUser) {
           const thetaRad = Math.atan2(connectedUser.x - tower.x, connectedUser.y - tower.y);
           statusLine1 = `θ ${((thetaRad * 180) / Math.PI).toFixed(1)}°`;
-          const deltaPhiRad = 2 * Math.PI * spacingLambda * Math.sin(thetaRad);
+          const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
+          const deltaPhiRad = 2 * Math.PI * towerSpacingLambda * Math.sin(thetaRad);
           statusLine2 = `Δφ ${deltaPhiRad.toFixed(2)} rad`;
         } else {
           statusLine1 = "No user";
@@ -901,6 +900,52 @@ export default function Simulator5G() {
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
+
+        // Draw AF lobe above tower body so the beam base is never visually clipped.
+        if (connectedUser) {
+          const lobeOrigin = towerArrayCenterById.get(tower.id);
+          const lx = lobeOrigin?.x ?? tx;
+          // Emit from just below the tower glyph so the beam is visible under the triangle body.
+          const ly = (lobeOrigin?.y ?? ty) + 8;
+          const steerDeg = (Math.atan2(connectedUser.x - tower.x, connectedUser.y - tower.y) * 180) / Math.PI;
+
+          const elemN = Math.max(2, Math.min(64, Math.round(Number((tower as any).num_elements ?? 16))));
+          const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
+          const towerWindowType = String((tower as any).window_type ?? "rectangular");
+          const towerApodizationEnabled = Boolean((tower as any).apodization_enabled ?? false);
+          const weights = buildWindowWeights(elemN, towerWindowType, towerApodizationEnabled);
+          const coverPx = (drawCoverageRadiusByTowerId.get(tower.id) ?? 4.5) * mToPx;
+          const maxLobeRadiusPx = Math.max(26, Math.min(coverPx * 0.96, CANVAS_W * 0.24));
+
+          const points: Array<{ x: number; y: number }> = [];
+          const baseLobeRadiusPx = 6;
+          for (const rel of lobeAngles) {
+            const absDeg = steerDeg + rel;
+            const af = computeArrayFactorNorm(absDeg, steerDeg, elemN, towerSpacingLambda, weights);
+            const r = baseLobeRadiusPx + maxLobeRadiusPx * Math.pow(af, 0.92);
+            const a = (absDeg * Math.PI) / 180;
+            points.push({ x: lx + Math.sin(a) * r, y: ly - Math.cos(a) * r });
+          }
+
+          if (points.length > 1) {
+            ctx.setLineDash([]);
+            ctx.beginPath();
+            ctx.moveTo(lx, ly);
+            for (const p of points) ctx.lineTo(p.x, p.y);
+            ctx.closePath();
+
+            const lobeFillAlpha = towerApodizationEnabled ? 0.20 : 0.14;
+            ctx.fillStyle = `hsla(${hue},88%,62%,${lobeFillAlpha})`;
+            ctx.fill();
+
+            ctx.strokeStyle = `hsla(${hue},92%,70%,${towerApodizationEnabled ? 0.9 : 0.72})`;
+            ctx.lineWidth = towerApodizationEnabled ? 1.7 : 1.4;
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+            ctx.stroke();
+          }
+        }
 
         ctx.fillStyle = `hsl(${hue},70%,88%)`;
         ctx.font = "bold 10px JetBrains Mono, monospace";
@@ -1018,22 +1063,11 @@ export default function Simulator5G() {
     selectedTowerId,
     fiveG,
     elementAllocsByTowerId,
-    currentConnections,
-    effectiveConnectedTowerByUserId,
     liveConnectedTowerByUserId,
     towerCoverageRadiusByTowerId,
     mapViewport,
     CANVAS_W,
     CANVAS_H,
-    DASH_LENGTH_PX,
-    DASH_GAP_PX,
-    DASH_SPEED_PX_PER_SEC,
-    PULSE_SPACING_PX,
-    PULSE_SPEED_PX_PER_SEC,
-    params.geometry,
-    params.numElements,
-    params.spacing,
-    params.radius,
   ]);
 
 
@@ -1153,6 +1187,34 @@ export default function Simulator5G() {
   const interferenceHeatmapData = useMemo(() => {
     const GRID_N = 180;
     const C = 3e8;
+    const besselI0 = (x: number) => {
+      let sum = 1;
+      let term = 1;
+      const half = x / 2;
+      for (let k = 1; k < 16; k++) {
+        term *= (half * half) / (k * k);
+        sum += term;
+      }
+      return sum;
+    };
+    const windowWeights = (nInput: number, wTypeInput: string, apodizationEnabled: boolean) => {
+      const n = Math.max(1, nInput);
+      const wType = String(wTypeInput ?? "rectangular").toLowerCase();
+      if (n === 1) return [1];
+      if (!apodizationEnabled || wType === "rectangular") return Array.from({ length: n }, () => 1);
+      if (wType === "hamming") return Array.from({ length: n }, (_, i) => 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (n - 1)));
+      if (wType === "hanning") return Array.from({ length: n }, (_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1)));
+      if (wType === "blackman") return Array.from({ length: n }, (_, i) => 0.42 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1)) + 0.08 * Math.cos((4 * Math.PI * i) / (n - 1)));
+      if (wType === "kaiser") {
+        const beta = 6.0;
+        const denom = besselI0(beta);
+        return Array.from({ length: n }, (_, i) => {
+          const t = (2 * i) / (n - 1) - 1;
+          return besselI0(beta * Math.sqrt(Math.max(0, 1 - t * t))) / Math.max(denom, 1e-12);
+        });
+      }
+      return Array.from({ length: n }, () => 1);
+    };
     const activeIds = new Set<number>(Array.from(liveConnectedTowerByUserId.values()));
     const participatingTowers = localTowers.filter((t) => activeIds.has(t.id));
     const localUsersById = new Map<number, { id: number; x: number; y: number }>(localUsers.map((u) => [u.id, u]));
@@ -1174,13 +1236,21 @@ export default function Simulator5G() {
       };
     }
 
-    const elementEmitters: Array<{ x: number; y: number; amp: number; phase: number }> = [];
+    const elementEmitters: Array<{ x: number; y: number; amp: number; phase: number; k: number }> = [];
 
     for (const tower of participatingTowers) {
-      const nElem = Math.max(2, Math.min(64, Math.round(Number(tower.num_elements ?? params.numElements ?? 16))));
-      const freqHz = Number(tower.frequency ?? params.frequency ?? 28e9);
+      const nElem = Math.max(2, Math.min(64, Math.round(Number((tower as any).num_elements ?? 16))));
+      const freqHz = Number((tower as any).frequency ?? 28e9);
       const wavelength = Math.max(1e-9, C / Math.max(1.0, freqHz));
-      const spacingMeters = Math.max(1e-6, Number(params.spacing ?? 0.5) * wavelength);
+      const spacingMeters = Math.max(1e-6, Number((tower as any).spacing ?? 0.5) * wavelength);
+      const amplitude = Math.max(1e-6, Number((tower as any).amplitude ?? 1.0));
+      const weights = windowWeights(
+        nElem,
+        String((tower as any).window_type ?? "rectangular"),
+        Boolean((tower as any).apodization_enabled ?? false)
+      );
+      const wNorm = Math.max(1e-9, weights.reduce((s, w) => s + Math.abs(w), 0));
+      const kWave = (2 * Math.PI) / wavelength;
       const centerOffset = (nElem - 1) / 2;
       const allocs = allocsByTower.get(tower.id) ?? [];
 
@@ -1231,13 +1301,14 @@ export default function Simulator5G() {
         }
 
         // Simple steering phase term for each element against its selected beam direction.
-        const phase = -((2 * Math.PI) / wavelength) * (ex * steerX + ey * steerY);
-        elementEmitters.push({ x: ex, y: ey, amp: 1, phase });
+        const phase = -kWave * (ex * steerX + ey * steerY);
+        const elemAmp = amplitude * ((weights[i] ?? 1) / wNorm);
+        elementEmitters.push({ x: ex, y: ey, amp: elemAmp, phase, k: kWave });
       }
     }
 
     const rawGrid: number[][] = [];
-    let maxVal = 0;
+    const flatVals: number[] = [];
 
     for (let yi = 0; yi < GRID_N; yi++) {
       const y = yRange[yi];
@@ -1248,17 +1319,25 @@ export default function Simulator5G() {
         let imag = 0;
         for (const em of elementEmitters) {
           const r = Math.max(kEpsilon, Math.hypot(x - em.x, y - em.y));
-          const phase = ((2 * Math.PI) * (r / Math.max(1e-9, C / Math.max(1.0, Number(params.frequency ?? 28e9))))) + em.phase;
+          const phase = (em.k * r) + em.phase;
           const a = em.amp / Math.sqrt(r);
           real += a * Math.cos(phase);
           imag += a * Math.sin(phase);
         }
+        // True interference intensity from complex superposition.
         const intensity = real * real + imag * imag;
         row.push(intensity);
-        if (intensity > maxVal) maxVal = intensity;
+        flatVals.push(intensity);
       }
       rawGrid.push(row);
     }
+
+    // Robust normalization: use a high percentile instead of absolute max
+    // to avoid a single hotspot turning the whole map bright.
+    flatVals.sort((a, b) => a - b);
+    const p = 0.99;
+    const idx = Math.min(flatVals.length - 1, Math.max(0, Math.floor(p * (flatVals.length - 1))));
+    const maxVal = Math.max(1e-12, flatVals[idx] ?? 1e-12);
 
     return {
       grid: rawGrid,
@@ -1268,9 +1347,6 @@ export default function Simulator5G() {
       extent: Math.max(spanX, spanY),
     };
   }, [
-    params.frequency,
-    params.numElements,
-    params.spacing,
     localUsers,
     localTowers,
     liveConnectedTowerByUserId,
@@ -1351,8 +1427,40 @@ export default function Simulator5G() {
     return { curveData, markers };
   }, [localUsers, localTowers, liveConnectedTowerByUserId, elementAllocsByTowerId, towerCoverageRadiusByTowerId]);
 
+  const panelControl = useMemo(() => (
+    <div className="h-full flex flex-col">
+      <div className="px-4 py-3 border-b border-border/50 bg-card/70">
+        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">Tower Selector</div>
+        <div className="grid grid-cols-3 gap-2">
+          {[1, 2, 3].map((id) => {
+            const selected = panelTowerId === id;
+            const hue = TOWER_COLORS[id]?.hue ?? DEFAULT_TOWER_HUE;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setPanelTowerId(id)}
+                className="h-8 rounded-md border text-[11px] font-mono font-semibold transition-colors"
+                style={{
+                  borderColor: selected ? `hsla(${hue},70%,60%,0.9)` : "hsla(240,10%,35%,0.6)",
+                  backgroundColor: selected ? `hsla(${hue},70%,42%,0.35)` : "hsla(240,10%,18%,0.55)",
+                  color: selected ? `hsl(${hue},80%,85%)` : "hsl(240,8%,78%)",
+                }}
+              >
+                {`T${id}`}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="flex-1 min-h-0">
+        <ControlPanel params={params} onParamChange={updateParam} />
+      </div>
+    </div>
+  ), [panelTowerId, params]);
+
   return (
-    <MainLayout controlPanel={<ControlPanel params={params} onParamChange={updateParam} />}>
+    <MainLayout controlPanel={panelControl}>
       <div className="grid grid-cols-2 grid-rows-2 gap-3 h-full">
 
         {/* ── 2D Map ───────────────────────────────────────────────────── */}

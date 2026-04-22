@@ -238,7 +238,16 @@ class TowerPositionSchema(BaseModel):
     x: float
     y: float
     num_elements: Optional[int] = Field(default=None, ge=4, le=64, description="Per-tower element count")
+    spacing: Optional[float] = Field(default=None, gt=0, description="Per-tower spacing in wavelengths")
     frequency: Optional[float] = Field(default=None, gt=0, description="Per-tower frequency in Hz")
+    steering_angle_deg: Optional[float] = Field(default=None, ge=-90, le=90, description="Per-tower steering angle")
+    amplitude: Optional[float] = Field(default=None, gt=0, description="Per-tower amplitude")
+    snr_db: Optional[float] = Field(default=None, ge=-100, le=200, description="Per-tower SNR in dB")
+    window_type: Optional[WindowType] = Field(default=None, description="Per-tower window type")
+    noise_enabled: Optional[bool] = Field(default=None, description="Per-tower noise toggle")
+    apodization_enabled: Optional[bool] = Field(default=None, description="Per-tower apodization toggle")
+    geometry: Optional[ArrayGeometryType] = Field(default=None, description="Per-tower geometry")
+    radius: Optional[float] = Field(default=None, ge=1.0, le=200.0, description="Per-tower curvature radius in wavelengths")
     coverage_radius_m: Optional[float] = Field(default=None, gt=0, le=20, description="Per-tower coverage radius in m")
 
 

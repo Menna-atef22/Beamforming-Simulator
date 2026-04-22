@@ -8,6 +8,16 @@ export interface TowerParams {
   coverage_radius_m: number;
   num_elements: number;
   frequency: number;         // Hz
+  spacing?: number;
+  wavelength?: number;
+  steering_angle_deg?: number;
+  amplitude?: number;
+  snr_db?: number;
+  window_type?: "rectangular" | "hamming" | "hanning" | "blackman" | "kaiser";
+  noise_enabled?: boolean;
+  apodization_enabled?: boolean;
+  geometry?: "linear" | "curved";
+  radius?: number;
 }
 
 interface TowerConfigPopupProps {
