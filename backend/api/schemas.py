@@ -13,7 +13,9 @@ class BeamformingParamsSchema(BaseModel):
     spacing: float = Field(default=0.5, gt=0, le=10, description="Element spacing in wavelengths")
     geometry: ArrayGeometryType = Field(default="linear", description="Array geometry type")
     radius: float = Field(default=5.0, ge=1.0, le=20.0, description="Curvature radius in wavelengths")
-    wavelength: float = Field(default=1.0, gt=0, description="Signal wavelength")
+    # Accept either frequency (Hz) or wavelength (m) - service resolves precedence
+    frequency: Optional[float] = Field(default=None, gt=0, description="Signal frequency in Hz (takes precedence over wavelength)")
+    wavelength: Optional[float] = Field(default=None, gt=0, description="Signal wavelength in m (used only when frequency is absent)")
     steering_angle_deg: float = Field(default=0, ge=-90, le=90, description="Beam steering angle in degrees")
     amplitude: float = Field(default=1.0, gt=0, description="Signal amplitude")
     snr_db: float = Field(default=30, ge=-100, le=200, description="Signal-to-noise ratio in dB")
@@ -28,7 +30,7 @@ class BeamformingParamsSchema(BaseModel):
                 "spacing": 0.5,
                 "geometry": "linear",
                 "radius": 5.0,
-                "wavelength": 1.0,
+                "frequency": 10e9,
                 "steering_angle_deg": 30,
                 "amplitude": 1.0,
                 "snr_db": 30,

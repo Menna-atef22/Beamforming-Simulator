@@ -18,6 +18,7 @@ export default function Home() {
     spacing: 0.5,
     geometry: "linear",
     radius: 5,
+    frequency: 1.0,
     wavelength: 1.0,
     steeringAngleDeg: 0,
     amplitude: 1.0,
@@ -27,12 +28,12 @@ export default function Home() {
     apodizationEnabled: false,
   });
   
-  const debouncedParams = useDebounce(params, 300);
+  const debouncedParams = useDebounce(params, 100);
   const isInitialLoadRef = useRef(true);
   const [result, setResult] = useState<BeamformingResult | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { simulate, error: apiError } = useBeamformingAPI();
+  const { simulate } = useBeamformingAPI();
 
   // Run simulation when debounced params change - FIXED: no state in deps
   useEffect(() => {
@@ -81,13 +82,15 @@ export default function Home() {
               beamwidthDeg: res.data.metrics.beamwidth_deg,
               sllDb: res.data.metrics.sll_db,
               mainLobeAngleDeg: res.data.metrics.main_lobe_angle_deg,
+              directivityDb: res.data.metrics.directivity_db ?? 0.0,
+              gainPeak: res.data.metrics.gain_peak ?? 1.0,
             },
             signalProfile: res.data.signal_profile,
           };
           setResult(converted);
           isInitialLoadRef.current = false;
         } else {
-          setError(res.error || apiError || "Simulation failed");
+          setError(res.error || "Simulation failed");
         }
       } catch (err) {
         if (isMounted) {

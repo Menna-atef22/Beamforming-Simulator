@@ -42,12 +42,25 @@ class SimulationService:
             spacing = params_dict.get("spacing", 0.5)
             geometry = params_dict.get("geometry", "linear")
             radius = params_dict.get("radius", 5.0)
-            frequency = params_dict.get("frequency", 10e9)
+            # Resolve frequency: prefer explicit frequency, else derive from wavelength
+            _SPEED_OF_LIGHT = 3e8
+            raw_frequency = params_dict.get("frequency")
+            raw_wavelength = params_dict.get("wavelength")
+            if raw_frequency is not None and float(raw_frequency) > 0:
+                frequency = float(raw_frequency)
+            elif raw_wavelength is not None and float(raw_wavelength) > 0:
+                frequency = _SPEED_OF_LIGHT / float(raw_wavelength)
+            else:
+                frequency = 10e9  # default 10 GHz
             steering_angle_deg = params_dict.get("steering_angle_deg", 0)
             amplitude = params_dict.get("amplitude", 1.0)
             snr_db = params_dict.get("snr_db", 30)
-            window_type = params_dict.get("window_type", "hamming")
+            window_type = params_dict.get("window_type", "rectangular")
             enable_noise = params_dict.get("enable_noise", False)
+            apodization_enabled = params_dict.get("apodization_enabled", False)
+            # If apodization is disabled, force rectangular window
+            if not apodization_enabled:
+                window_type = "rectangular"
             grid_size = params_dict.get("grid_size", 360)
             
             # Create array model and run simulation

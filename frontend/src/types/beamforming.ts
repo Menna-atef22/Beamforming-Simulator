@@ -13,7 +13,7 @@ export interface BeamformingParams {
   spacing: number;
   geometry?: ArrayGeometry;
   radius?: number;
-  frequency: number;
+  frequency?: number;  // Optional - derived from wavelength if not provided
   wavelength?: number;
   steeringAngleDeg?: number;
   amplitude: number;
@@ -46,8 +46,8 @@ export interface BeamMetrics {
   beamwidthDeg: number;
   sllDb: number;
   mainLobeAngleDeg: number;
-  directivityDb: number;
-  gainPeak: number;
+  directivityDb?: number;
+  gainPeak?: number;
 }
 
 /** 2D spatial interference map */
@@ -56,15 +56,23 @@ export interface InterferenceMapData {
   xRange: number[];
   yRange: number[];
   maxVal: number;
-  extent: number;
+  extent?: number;
+}
+
+/** Signal profile point at spatial position */
+export interface SignalSample {
+  position: number;
+  amplitude: number;
 }
 
 /** Generic beamforming result */
 export interface BeamformingResult {
-  angles: number[];
-  magnitudes: number[];
-  magnitudesDb: number[];
+  array: ArrayElement[];
+  beamPattern: BeamPattern;
+  beamPatternNoSteer: BeamPattern;
+  interferenceMap: InterferenceMapData;
   metrics: BeamMetrics;
+  signalProfile: SignalSample[];
 }
 
 /** Window function types */

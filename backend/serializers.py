@@ -75,7 +75,7 @@ def serialize_5g_result(result) -> Dict[str, Any]:
                 "element_allocations": bp.get("element_allocations", []) if isinstance(bp, dict) else getattr(bp, "element_allocations", []),
                 "angles": bp.get("angles", []) if isinstance(bp, dict) else getattr(bp, "angles", []),
                 "magnitudes": magnitudes,
-                "magnitudes_db": [20 * math.log10(max(m, 1e-6)) for m in magnitudes],
+                "magnitudes_db": [20 * math.log10(max(m, 1e-3)) for m in magnitudes],
                 "metrics": bp.get("metrics", {}) if isinstance(bp, dict) else getattr(bp, "metrics", {})
             })
     

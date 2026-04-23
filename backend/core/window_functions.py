@@ -181,34 +181,64 @@ class WindowFunction:
         return weights
     
     def _taylor_window(self) -> List[float]:
-        """Taylor window using equal-ripple design.
-        
-        Provides control over sidelobe level (taylor_sll) and number of
-        constant-level sidelobes (taylor_nbar).
+        """True Taylor window using equal-ripple sidelobe design.
+
+        Implements the exact Taylor weighting algorithm:
+        1. Compute A = acosh(10^(-SLL/20)) / pi
+        2. Compute sigma^2 from nbar and A
+        3. Compute Fm coefficients via the Taylor series formula
+        4. Evaluate the window using the Fourier-series sum
+
+        Reference: Taylor (1955), "Design of Line-Source Antennas for
+        Narrow Beamwidth and Low Sidelobes".
         """
+        N = self.num_elements
+        nbar = self.taylor_nbar
+        sll_db = self.taylor_sll  # negative number, e.g. -30
+
+        # --- Step 1: A parameter from SLL ---
+        # SLL in linear: R = 10^(-|SLL|/20)  =>  A = acosh(1/R) / pi
+        R = math.pow(10.0, abs(sll_db) / 20.0)
+        A = math.acosh(R) / math.pi
+
+        # --- Step 2: sigma^2 ---
+        # sigma^2 = nbar^2 / (A^2 + (nbar - 0.5)^2)
+        sigma2 = (nbar * nbar) / (A * A + (nbar - 0.5) ** 2)
+
+        # --- Step 3: Fm coefficients  (m = 1 … nbar-1) ---
+        def _F(m: int) -> float:
+            """Taylor Fm coefficient."""
+            num = 1.0
+            den = 1.0
+            for n in range(1, nbar):
+                # zeros of the visible-space pattern
+                z_n = sigma2 * (A * A + (n - 0.5) ** 2)
+                num *= 1.0 - (m * m) / z_n
+            for n in range(1, nbar):
+                if n == m:
+                    continue
+                den *= 1.0 - (m * m) / (n * n)
+            return num / den if den != 0.0 else 0.0
+
+        Fm = [_F(m) for m in range(1, nbar)]  # length = nbar-1
+
+        # --- Step 4: Evaluate window at each element ---
         weights = []
-        
-        # For simplicity, use Chebyshev approximation
-        # In practice, would use Taylor-Weighting algorithm
-        # For now, use Hamming as fallback with parameter modulation
-        
-        # Transitional implementation: blend toward more aggressive taper
-        hamming_base = self._hamming_window()
-        N = self.num_elements - 1
-        
-        # Apply additional taper based on SLL and nbar
-        for n in range(self.num_elements):
-            if N == 0:
-                w = 1.0
-            else:
-                x = 2.0 * n / N - 1.0
-                # Increase edge taper for lower SLL
-                sll_factor = abs(self.taylor_sll) / 30.0  # Normalize to -30dB reference
-                edge_taper = 1.0 - sll_factor * (x * x)
-                w = hamming_base[n] * max(edge_taper, 0.1)
-            
+        for i in range(N):
+            # normalized position: xi in [-0.5, 0.5]
+            xi = (i - (N - 1) / 2.0) / N
+
+            w = 1.0
+            for m_idx, fm in enumerate(Fm):
+                m = m_idx + 1
+                w += 2.0 * fm * math.cos(2.0 * math.pi * m * xi)
             weights.append(w)
-        
+
+        # Normalize so that the maximum weight == 1.0
+        max_w = max(abs(w) for w in weights) if weights else 1.0
+        if max_w > 0:
+            weights = [w / max_w for w in weights]
+
         return weights
     
     def get_weights(self) -> List[float]:

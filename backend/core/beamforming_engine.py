@@ -74,13 +74,13 @@ class BeamformingEngine:
     """
     
     # Default angular step for beam pattern computation (degrees)
-    DEFAULT_ANGLE_STEP = 0.5
+    DEFAULT_ANGLE_STEP = 1.0
     
     # Angular range for beam pattern (degrees)
     DEFAULT_ANGLE_RANGE = 180.0
     
     # Default grid size for interference map
-    DEFAULT_GRID_SIZE = 80
+    DEFAULT_GRID_SIZE = 60
     
     # Default spatial extent for interference map
     DEFAULT_EXTENT = 5.0
@@ -173,9 +173,11 @@ class BeamformingEngine:
             max_mag = 1.0
         
         # Convert to dB: 20*log10(mag/max_mag) - normalized to peak = 0 dB
+        # Floor at 1e-3 => -60 dB (physically meaningful dynamic range)
+        DB_FLOOR = 1e-3
         magnitudes_db = []
         for mag in magnitudes:
-            mag_db = 20 * math.log10(max(mag / max_mag, 1e-10))
+            mag_db = 20 * math.log10(max(mag / max_mag, DB_FLOOR))
             magnitudes_db.append(mag_db)
         
         return BeamPattern(
@@ -363,6 +365,13 @@ class BeamformingEngine:
                 "amplitude": max(0.0, magnitude)
             })
         
+        # Normalize profile so peak amplitude = 1.0 for consistent display
+        if profile:
+            peak_amp = max(p["amplitude"] for p in profile)
+            if peak_amp > 1e-10:
+                for p in profile:
+                    p["amplitude"] = p["amplitude"] / peak_amp
+        
         return profile
     
     def run_simulation(
@@ -382,8 +391,8 @@ class BeamformingEngine:
         Args:
             steering_angle_deg: Main beam steering angle in degrees (default: 0).
             enable_noise: Whether to add SNR-based noise (default: False).
-            grid_size: Grid resolution for 2D map (default: 80).
-            angle_step: Angular step for beam pattern (default: 0.5°).
+            grid_size: Grid resolution for 2D map (default: 60).
+            angle_step: Angular step for beam pattern (default: 1.0°).
             profile_depth: Depth for 1D signal profile (default: 2.0 m).
         
         Returns:
