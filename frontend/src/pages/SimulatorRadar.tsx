@@ -265,7 +265,7 @@ export default function SimulatorRadar() {
 
   // ── Scan controls ────────────────────────────────────────────────────────────
   const [beamWidth, setBeamWidth] = useState(10);
-  const [scanSpeed, setScanSpeed] = useState(5);
+  const [scanSpeed, setScanSpeed] = useState(2.0);
   const [radarMode, setRadarMode] = useState<"mechanical" | "beamforming">(
     "beamforming",
   );
@@ -306,6 +306,8 @@ export default function SimulatorRadar() {
 
   const ANGLE_SLOTS = 720;
   const angleChartBufRef = useRef<Float32Array>(new Float32Array(ANGLE_SLOTS));
+  /** Tracks the last slot index written so we can detect revolution boundaries */
+  const angleChartLastSlotRef = useRef<number>(ANGLE_SLOTS - 1);
   const [angleSamples, setAngleSamples] = useState<AngleSample[]>([]);
 
   const beamInsideRef = useRef<Map<string, boolean>>(new Map());
@@ -460,17 +462,14 @@ export default function SimulatorRadar() {
     const effectiveSweepDeg = clampAngleDeg360(sweepDeg + dp.steeringOffsetDeg);
 
     // ── SNR model ─────────────────────────────────────────────────────────────
-    // Linear SNR: snrLinear = 10^(SNR_dB/20)  (voltage / field ratio)
-    // noise_amplitude = reference_signal / snrLinear
-    // reference_signal = dp.amplitude (peak signal at 1 m, normalised distance)
-    // At SNR=0 dB  → noise = signal   (very noisy)
-    // At SNR=40 dB → noise = signal/100 (essentially clean)
+    // noise_std = signal_amplitude / 10^(SNR_dB/20)
+    // At SNR=60 dB: noise_std = amplitude/1000  → virtually zero
+    // At SNR=15 dB: noise_std = amplitude/5.6   → moderate noise
+    // At SNR=0  dB: noise_std = amplitude/1     → noise equals signal
     const snrLinear = Math.pow(10, dp.snrDb / 20);
-    // Noise floor amplitude (added to every slot, including empty ones)
-    const noiseFloor = dp.amplitude / snrLinear;
-    // Detection threshold: a target must produce intensity > threshold to register.
-    // We set threshold at 3× the noise floor (≈ 10 dB above noise).
-    const detectionThreshold = 3 * noiseFloor;
+    const noiseStd = dp.amplitude / snrLinear;
+    // Detection threshold: 3× noise std (≈ 10 dB margin above noise floor)
+    const detectionThreshold = 3 * noiseStd;
 
     // Gaussian noise sample via Box-Muller — always safe (u1 clamped away from 0)
     const gaussNoise = (): number => {
@@ -488,60 +487,76 @@ export default function SimulatorRadar() {
     };
 
     // ── Angle Detection chart — written every frame ───────────────────────────
-    // Every slot gets a noise sample so there is always a noise floor visible.
-    // Signal is added on top when the beam is over a target.
+    // We track whether the beam has completed a full revolution.  At the start
+    // of each new revolution we reset the entire buffer so stale values from
+    // previous sweeps never persist and pollute the chart at high SNR.
     const slotIdx =
       Math.round((((effectiveSweepDeg % 360) + 360) % 360) * 2) % ANGLE_SLOTS;
 
-    // Start from the noise floor for this slot (always present)
-    let slotSignal = 0;
-    let slotHasTarget = false;
+    // Detect revolution boundary: when slotIdx wraps back near 0
+    if (
+      slotIdx < 4 &&
+      (angleChartLastSlotRef.current ?? ANGLE_SLOTS - 1) > ANGLE_SLOTS - 8
+    ) {
+      // New revolution started — clear the buffer so stale noise never persists
+      angleChartBufRef.current.fill(0);
+    }
+    angleChartLastSlotRef.current = slotIdx;
 
+    // Compute clean signal for this slot (0 when beam is not over any target)
+    // Detection condition per spec: |θ - θ_target| < beamwidth/2 + target_angular_size/2
+    // where target_angular_size = atan2(target_radius, target_distance) in degrees
+    let slotSignal = 0;
     for (const t of targets) {
       const targetAngleDeg = clampAngleDeg360(t.angleDeg);
       const deltaDeg = Math.abs(wrapDiff(effectiveSweepDeg, targetAngleDeg));
-      if (deltaDeg >= halfBeam) continue;
-
+      const targetRadiusM = t.sizeM / 2;
+      const targetAngularSizeDeg =
+        (Math.atan2(targetRadiusM, Math.max(0.1, t.distanceM)) * 180) / Math.PI;
+      const detectionHalfWindow = halfBeam + targetAngularSizeDeg / 2;
+      if (deltaDeg >= detectionHalfWindow) continue;
       const distM = Math.max(0.1, t.distanceM);
-      // Clean signal: sinc²(Δθ/bw)/d²  or  cosine taper/d²
       let cleanSignal: number;
       if (currentMode === "mechanical") {
+        // Mechanical: uniform illumination within beamwidth, zero outside
         const frac = deltaDeg / halfBeam;
         cleanSignal =
           (dp.amplitude * Math.cos((frac * Math.PI) / 2)) / (distM * distM);
       } else {
-        const sv = sincNorm(deltaDeg / beamWidthDeg);
+        // Beamforming: sinc-shaped array factor (return pulse width scales with beamwidth)
+        const sv = sincNorm(deltaDeg / Math.max(0.5, beamWidthDeg));
         cleanSignal = (dp.amplitude * sv * sv) / (distM * distM);
       }
       if (!Number.isFinite(cleanSignal)) cleanSignal = 0;
       if (cleanSignal > slotSignal) slotSignal = cleanSignal;
-      if (cleanSignal > 0) slotHasTarget = true;
     }
 
-    // Add Gaussian noise to the slot — noise floor always present.
-    // At low SNR the noise is comparable to the signal; at high SNR negligible.
-    const noise = noiseFloor * Math.abs(gaussNoise());
-    const slotIntensity = Math.max(0, slotSignal + noise);
+    // Add Gaussian noise scaled by noise_std = amplitude / 10^(SNR/20).
+    // At 60 dB: noiseStd = amplitude/1000 → invisible on chart.
+    // At 15 dB: noiseStd = amplitude/5.6  → moderate, spike still clear.
+    // At 0  dB: noiseStd = amplitude/1    → heavy noise, spike may be buried.
+    const noiseSample = noiseStd * gaussNoise();
+    const slotIntensity = Math.max(0, slotSignal + noiseSample);
     angleChartBufRef.current[slotIdx] = Number.isFinite(slotIntensity)
       ? slotIntensity
       : 0;
 
-    // ── False detections at low SNR ───────────────────────────────────────────
-    // Randomly write noise spikes into a few nearby slots so the chart shows
-    // a noisy, blurry baseline rather than a clean flat line at low SNR.
-    // The number and magnitude of false spikes scales inversely with SNR.
-    if (dp.snrDb < 20 && Math.random() < 0.35) {
-      // Scatter 1-3 noise bumps within ±15° of current beam angle
-      const nFalse = Math.floor(Math.random() * 3) + 1;
+    // ── False detections at low SNR (< 15 dB) ────────────────────────────────
+    // Scatter occasional noise bumps at random angles so the chart shows a
+    // visibly noisy/blurry baseline.  Disabled at ≥ 15 dB for a clean display.
+    if (dp.snrDb < 15 && Math.random() < 0.25) {
+      const nFalse = 1 + Math.floor(Math.random() * 2);
       for (let f = 0; f < nFalse; f++) {
-        const offsetDeg = (Math.random() - 0.5) * 30;
+        const offsetDeg = (Math.random() - 0.5) * 40;
         const falseAngle = clampAngleDeg360(effectiveSweepDeg + offsetDeg);
         const fi = Math.round(falseAngle * 2) % ANGLE_SLOTS;
-        // False spike amplitude: noise floor × random (0..1), stronger at lower SNR
+        // False amplitude proportional to noise std — stronger the lower the SNR
         const falseAmp =
-          noiseFloor * Math.random() * Math.max(0, (20 - dp.snrDb) / 20);
-        const prev = angleChartBufRef.current[fi];
-        angleChartBufRef.current[fi] = Math.max(prev, falseAmp);
+          noiseStd * Math.abs(gaussNoise()) * ((15 - dp.snrDb) / 15);
+        angleChartBufRef.current[fi] = Math.max(
+          angleChartBufRef.current[fi],
+          falseAmp,
+        );
       }
     }
 
@@ -560,13 +575,19 @@ export default function SimulatorRadar() {
 
     const hitIds = new Set<string>();
     const frameDetections: DetectionPoint[] = [];
-    const effectiveHalf =
-      currentMode === "mechanical" ? halfBeam * 1.1 : halfBeam;
 
     for (let ti = 0; ti < targets.length; ti++) {
       const t = targets[ti];
       const targetAngleDeg = clampAngleDeg360(t.angleDeg);
       const deltaDeg = Math.abs(wrapDiff(effectiveSweepDeg, targetAngleDeg));
+      // Target angular size contributes to detection window (spec requirement)
+      const targetRadiusM = t.sizeM / 2;
+      const targetAngularSizeDeg =
+        (Math.atan2(targetRadiusM, Math.max(0.1, t.distanceM)) * 180) / Math.PI;
+      const effectiveHalf =
+        currentMode === "mechanical"
+          ? halfBeam * 1.1 + targetAngularSizeDeg / 2
+          : halfBeam + targetAngularSizeDeg / 2;
       const inBeam = deltaDeg < effectiveHalf;
 
       const wasInside = beamInsideRef.current.get(t.id) ?? false;
@@ -591,7 +612,7 @@ export default function SimulatorRadar() {
       // SNR-weighted detection gate: the noisy received power must exceed threshold.
       // noisySNR adds a random noise sample to determine if this particular
       // detection attempt succeeds (models pulse-to-pulse fading).
-      const noisySNR = cleanSignal + noiseFloor * gaussNoise();
+      const noisySNR = cleanSignal + noiseStd * gaussNoise();
       const detected = noisySNR >= detectionThreshold;
 
       if (detected) hitIds.add(t.id);
@@ -657,16 +678,14 @@ export default function SimulatorRadar() {
     runDetectionRef.current = runDetection;
   });
 
-  // ─── Constant-speed RAF scan loop ─────────────────────────────────────────────
+  // ─── Scan loop — degrees per frame ────────────────────────────────────────────
 
   useEffect(() => {
     let raf = 0;
-    let lastMs = performance.now();
     const tick = (now: number) => {
-      const dt = Math.min((now - lastMs) / 1000, 0.1);
-      lastMs = now;
+      // Scan speed slider controls degrees per frame (spec requirement)
       const nextAngle = clampAngleDeg360(
-        scanAngleRef.current + scanSpeedRef.current * dt,
+        scanAngleRef.current + scanSpeedRef.current,
       );
       scanAngleRef.current = nextAngle;
       setScanAngleDeg(nextAngle);
@@ -1017,21 +1036,7 @@ export default function SimulatorRadar() {
     const sweepRad = degToRad(scanAngleDeg);
 
     if (radarMode === "mechanical") {
-      const trailDeg = 60;
-      const trailStart = sweepRad - degToRad(trailDeg);
-      for (let s = 0; s < 45; s++) {
-        const t0 = trailStart + degToRad((s / 45) * trailDeg);
-        const t1 = trailStart + degToRad(((s + 1) / 45) * trailDeg);
-        ctx.save();
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.arc(cx, cy, radius, t0, t1);
-        ctx.lineTo(cx, cy);
-        ctx.closePath();
-        ctx.fillStyle = `hsla(120,100%,50%,${(s / 45) * 0.07})`;
-        ctx.fill();
-        ctx.restore();
-      }
+      // Simple rotating sweep line — no physics, just angle increment per frame
       const sg = ctx.createLinearGradient(
         cx,
         cy,
@@ -1061,7 +1066,8 @@ export default function SimulatorRadar() {
         (params.apodizationEnabled ? params.windowType : "rectangular") ??
         "rectangular";
       const weights = makeWindowWeights(wType, nElemLobe);
-      const steeringDeg = Number(params.steeringAngleDeg ?? 0);
+      // Phase shifts computed from current scan angle every frame (spec requirement)
+      const steeringDeg = scanAngleDeg;
       const phaseOffsetRad =
         2 * Math.PI * dOverLambda * Math.sin(degToRad(steeringDeg));
       const amplitude = Math.max(0.01, Number(params.amplitude ?? 1.0));
@@ -1199,7 +1205,7 @@ export default function SimulatorRadar() {
     ctx.fillText(`θ: ${effHUD.toFixed(1)}°`, 14, 22);
     ctx.fillText(`Δφ: ${dPhi.toFixed(2)} rad`, 14, 38);
     ctx.fillText(
-      `${scanSpeed}°/s  ${(params.geometry ?? "linear").toUpperCase()}`,
+      `${scanSpeed.toFixed(1)}°/f  ${(params.geometry ?? "linear").toUpperCase()}`,
       14,
       54,
     );
@@ -1371,17 +1377,23 @@ export default function SimulatorRadar() {
 
   // ─── Derived chart data ───────────────────────────────────────────────────────
 
-  /** Angle Detection: normalised AF at each 0.5° bucket. */
+  /** Angle Detection: normalised by reference amplitude, NOT by peak.
+   *
+   * Normalising by peak causes the chart to auto-scale so noise fills
+   * 0..1 even at high SNR.  Instead we divide by dp.amplitude (the
+   * reference signal at 1 m distance) so the Y axis is stable and noise
+   * is genuinely tiny at high SNR.  Values are clamped to [0, 1] so a
+   * close target spike stays at 1 and the noise floor sits near 0.
+   */
   const angleDetChartData = useMemo(() => {
     if (angleSamples.length === 0) return [];
-    let peak = 0;
-    for (const s of angleSamples) if (s.intensity > peak) peak = s.intensity;
-    if (peak <= 0)
-      return angleSamples.map((s) => ({ angle: s.angle, intensity: 0 }));
-    const scale = 1 / peak;
+    // Reference: peak signal at 1 m, boresight → amplitude / 1² = amplitude
+    const refAmplitude = Math.max(0.001, detParamsRef.current.amplitude);
     return angleSamples.map((s) => ({
       angle: s.angle,
-      intensity: parseFloat((s.intensity * scale).toFixed(4)),
+      intensity: parseFloat(
+        Math.min(1, Math.max(0, s.intensity / refAmplitude)).toFixed(4),
+      ),
     }));
   }, [angleSamples]);
 
@@ -1440,6 +1452,7 @@ export default function SimulatorRadar() {
     detectionHistoryRef.current = [];
     setDetectionHistory([]);
     angleChartBufRef.current.fill(0);
+    angleChartLastSlotRef.current = ANGLE_SLOTS - 1;
     beamInsideRef.current.clear();
     setAngleSamples([]);
     simStartMs.current = performance.now();
@@ -1470,15 +1483,15 @@ export default function SimulatorRadar() {
                 clearChartData();
                 if (s === "quick") {
                   setBeamWidth(22);
-                  setScanSpeed(16);
+                  setScanSpeed(6.0);
                 }
                 if (s === "precision") {
                   setBeamWidth(4);
-                  setScanSpeed(3);
+                  setScanSpeed(1.0);
                 }
                 if (s === "multi") {
                   setBeamWidth(14);
-                  setScanSpeed(10);
+                  setScanSpeed(3.0);
                   const base = performance.now();
                   const preset: PlacedTarget[] = [
                     {
@@ -1558,14 +1571,14 @@ export default function SimulatorRadar() {
             Scan Speed
           </Label>
           <span className="text-xs font-mono text-foreground tabular-nums">
-            {scanSpeed}°/s
+            {scanSpeed.toFixed(1)}°/frame
           </span>
         </div>
         <Slider
           value={[scanSpeed]}
-          min={1}
-          max={60}
-          step={1}
+          min={0.5}
+          max={10}
+          step={0.5}
           onValueChange={([v]) => setScanSpeed(v)}
         />
       </div>
