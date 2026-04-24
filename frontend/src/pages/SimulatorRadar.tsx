@@ -258,6 +258,7 @@ export default function SimulatorRadar() {
   const [params, setParams] = useState<BeamformingParams & Record<string, any>>(
     defaultParams,
   );
+  const [showTradeoffs, setShowTradeoffs] = useState(true);
   const debouncedParams = useDebounce(params, 300);
   const [result, setResult] = useState<SimulatorRadarResponse | null>(null);
   const isInitialLoadRef = useRef(true);
@@ -1243,7 +1244,8 @@ export default function SimulatorRadar() {
     const dHUD = Number(params.spacing ?? 0.5) / wHUD;
     const stHUD = Number(params.steeringAngleDeg ?? 0);
     const effHUD = scanAngleDeg + stHUD;
-    const dPhi = 2 * Math.PI * dHUD * Math.sin(degToRad(effHUD));
+    const rawDPhi = 2 * Math.PI * dHUD * Math.sin(degToRad(effHUD));
+    const dPhi = ((rawDPhi + Math.PI) % (2 * Math.PI)) - Math.PI;
     ctx.fillStyle = "hsla(240,8%,78%,0.75)";
     ctx.font = "10px JetBrains Mono";
     ctx.fillText(`θ: ${effHUD.toFixed(1)}°`, 14, 22);
@@ -1918,7 +1920,7 @@ export default function SimulatorRadar() {
           const t = placedTargets.find((x) => x.id === selectedTargetId);
           if (!t) return null;
           return (
-            <div className="space-y-1.5">
+            <div className="space-y-1.5 pt-3 border-t border-white/10 mt-3">
               <div className="flex justify-between items-center">
                 <Label className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
                   Target Size
@@ -1941,6 +1943,85 @@ export default function SimulatorRadar() {
             </div>
           );
         })()}
+
+      {/* Configuration Trade-offs Panel */}
+      <div className="pt-4 border-t border-white/10 mt-4">
+        <button
+          onClick={() => setShowTradeoffs(!showTradeoffs)}
+          className="flex items-center justify-between w-full text-[10px] font-mono font-bold uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors group"
+        >
+          <span>Configuration Trade-offs</span>
+          <span className={`transform transition-transform ${showTradeoffs ? "rotate-180" : ""}`}>
+            ▼
+          </span>
+        </button>
+
+        {showTradeoffs && (
+          <div className="mt-3 space-y-3">
+            {(() => {
+              const n = Number(params.numElements || 32);
+              const dLambda = Number(params.spacing || 0.5);
+              // BW formula: ≈ 0.886λ / (N*d) radians, convert to degrees
+              const calculatedBW = (0.886 / (n * dLambda)) * (180 / Math.PI);
+              const snrLinear = Math.pow(10, (params.snrDb || 0) / 20);
+              const relRange = Math.min(DETECTION_RANGE_M, DETECTION_RANGE_M * (snrLinear / 20));
+              
+              return (
+                <>
+                  {/* Beam Width */}
+                  <div className="space-y-1">
+                    <Label className="text-[9px] font-mono text-muted-foreground uppercase opacity-70">Beam Width</Label>
+                    <div className="text-[11px] font-mono text-foreground flex justify-between">
+                      <span className="opacity-60 text-[9px]">≈ 0.886λ/(N×d)</span>
+                      <span className="text-primary font-bold">{calculatedBW.toFixed(2)}°</span>
+                    </div>
+                  </div>
+
+                  {/* Grating Lobes */}
+                  <div className="space-y-1">
+                    <Label className="text-[9px] font-mono text-muted-foreground uppercase opacity-70">Grating Lobes</Label>
+                    <div className={`text-[10px] font-mono flex items-center gap-1.5 ${dLambda > 0.5 ? "text-red-400" : "text-emerald-400"}`}>
+                      {dLambda > 0.5 ? (
+                        <>⚠️ Grating lobes present — reduce spacing below 0.5λ</>
+                      ) : (
+                        <>✓ No grating lobes</>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Back Lobe */}
+                  <div className="space-y-1">
+                    <Label className="text-[9px] font-mono text-muted-foreground uppercase opacity-70">Back Lobe</Label>
+                    <div className={`text-[10px] font-mono flex items-center gap-1.5 ${params.geometry === "linear" ? "text-orange-400" : "text-emerald-400"}`}>
+                      {params.geometry === "linear" ? (
+                        <>⚠️ Back lobe present — switch to Curved to eliminate</>
+                      ) : (
+                        <>✓ No back lobe</>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* SNR Detection Range */}
+                  <div className="space-y-1">
+                    <Label className="text-[9px] font-mono text-muted-foreground uppercase opacity-70">SNR Detection Range</Label>
+                    <div className="text-[10px] font-mono text-foreground">
+                      Reliable detection up to <span className="text-primary font-bold">≈ {relRange.toFixed(1)}m</span>
+                    </div>
+                  </div>
+
+                  {/* Resolution */}
+                  <div className="space-y-1">
+                    <Label className="text-[9px] font-mono text-muted-foreground uppercase opacity-70">Resolution</Label>
+                    <div className="text-[10px] font-mono text-foreground">
+                      Min separation: <span className="text-primary font-bold">{calculatedBW.toFixed(2)}°</span>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
+      </div>
     </>
   );
 

@@ -89,10 +89,7 @@ export default function ControlPanel({
     (params.spacing ?? 0.5) *
     Math.sin(steeringRad);
   // Normalise to [-π, +π]
-  const phaseShift = (
-    ((((rawPhase + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) -
-    Math.PI
-  ).toFixed(3);
+  const phaseShift = (((rawPhase + Math.PI) % (2 * Math.PI)) - Math.PI).toFixed(3);
   const geometry = params.geometry ?? "linear";
 
   return (
