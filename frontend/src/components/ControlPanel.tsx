@@ -177,8 +177,8 @@ export default function ControlPanel({
       <SliderControl
         label="Steering (θ)"
         value={params.steeringAngleDeg ?? 0}
-        min={-90}
-        max={90}
+        min={params.scanRangeDeg === 360 ? 0 : -90}
+        max={params.scanRangeDeg === 360 ? 360 : 90}
         step={1}
         unit="°"
         onChange={(v) => onParamChange("steeringAngleDeg", v)}

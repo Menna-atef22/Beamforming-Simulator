@@ -11,6 +11,7 @@ import { useDebounce } from "@/hooks/useDebounce";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import HeatmapView from "@/components/HeatmapView";
 import "./SimulatorRadar.css";
 import {
   ResponsiveContainer,
@@ -265,11 +266,12 @@ export default function SimulatorRadar() {
 
   // ── Scan controls ────────────────────────────────────────────────────────────
   const [beamWidth, setBeamWidth] = useState(10);
-  const [scanSpeed, setScanSpeed] = useState(2.0);
+  const [scanSpeed, setScanSpeed] = useState(60.0);
   const [radarMode, setRadarMode] = useState<"mechanical" | "beamforming">(
     "beamforming",
   );
   const radarModeRef = useRef<"mechanical" | "beamforming">("beamforming");
+  const [radarViewMode, setRadarViewMode] = useState<"ppi" | "heatmap">("ppi");
 
   // ── Scan angle ───────────────────────────────────────────────────────────────
   const [scanAngleDeg, setScanAngleDeg] = useState(0);
@@ -348,6 +350,7 @@ export default function SimulatorRadar() {
     () => {},
   );
   const scanSpeedRef = useRef(scanSpeed);
+  const lastScanTickMsRef = useRef<number | null>(null);
 
   // ─── Keep refs current ────────────────────────────────────────────────────────
 
@@ -431,6 +434,11 @@ export default function SimulatorRadar() {
     key: K,
     value: BeamformingParams[K],
   ) => {
+    if (key === "steeringAngleDeg") {
+      const nextAngle = Number(value);
+      scanAngleRef.current = nextAngle;
+      setScanAngleDeg(nextAngle);
+    }
     setParams((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -535,7 +543,8 @@ export default function SimulatorRadar() {
     // At 60 dB: noiseStd = amplitude/1000 → invisible on chart.
     // At 15 dB: noiseStd = amplitude/5.6  → moderate, spike still clear.
     // At 0  dB: noiseStd = amplitude/1    → heavy noise, spike may be buried.
-    const noiseSample = noiseStd * gaussNoise();
+    const chartNoiseStd = noiseStd * 0.35;
+    const noiseSample = chartNoiseStd * gaussNoise();
     const slotIntensity = Math.max(0, slotSignal + noiseSample);
     angleChartBufRef.current[slotIdx] = Number.isFinite(slotIntensity)
       ? slotIntensity
@@ -619,6 +628,29 @@ export default function SimulatorRadar() {
 
       // Leading-edge recording: record when beam first enters AND detection succeeds
       if (!wasInside && detected) {
+        // Write a strong, narrow spike at the target angle when beam first hits.
+        const targetSlot =
+          Math.round((((targetAngleDeg % 360) + 360) % 360) * 2) % ANGLE_SLOTS;
+        const spikeAbs = Math.max(
+          dp.amplitude * 0.35,
+          Math.min(dp.amplitude * 1.15, cleanSignal * 12),
+        );
+        angleChartBufRef.current[targetSlot] = Math.max(
+          angleChartBufRef.current[targetSlot],
+          spikeAbs,
+        );
+        const sideSpike = spikeAbs * 0.45;
+        const left = (targetSlot - 1 + ANGLE_SLOTS) % ANGLE_SLOTS;
+        const right = (targetSlot + 1) % ANGLE_SLOTS;
+        angleChartBufRef.current[left] = Math.max(
+          angleChartBufRef.current[left],
+          sideSpike,
+        );
+        angleChartBufRef.current[right] = Math.max(
+          angleChartBufRef.current[right],
+          sideSpike,
+        );
+
         const elapsedS = (nowMs - simStartMs.current) / 1000;
         const pt: DetectionPoint = {
           detectedAtMs: nowMs,
@@ -678,14 +710,19 @@ export default function SimulatorRadar() {
     runDetectionRef.current = runDetection;
   });
 
-  // ─── Scan loop — degrees per frame ────────────────────────────────────────────
+  // ─── Scan loop — degrees per second ────────────────────────────────────────────
 
   useEffect(() => {
     let raf = 0;
     const tick = (now: number) => {
-      // Scan speed slider controls degrees per frame (spec requirement)
+      // Scan speed slider controls degrees per second.
+      const prevMs = lastScanTickMsRef.current;
+      const dtSec =
+        prevMs == null ? 0 : Math.min(0.1, Math.max(0, (now - prevMs) / 1000));
+      lastScanTickMsRef.current = now;
+
       const nextAngle = clampAngleDeg360(
-        scanAngleRef.current + scanSpeedRef.current,
+        scanAngleRef.current + scanSpeedRef.current * dtSec,
       );
       scanAngleRef.current = nextAngle;
       setScanAngleDeg(nextAngle);
@@ -693,9 +730,11 @@ export default function SimulatorRadar() {
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      lastScanTickMsRef.current = null;
+    };
   }, []);
-
   // ─── PPI canvas draw ──────────────────────────────────────────────────────────
   // Draws a real radar PPI screen: dark bg, range rings, glowing dots at
   // detection positions that fade over PPI_FADE_MS milliseconds.
@@ -987,213 +1026,202 @@ export default function SimulatorRadar() {
       ctx.textBaseline = "alphabetic";
     }
 
-    // Draw array elements to visualise geometry
+    const sweepRad = degToRad(scanAngleDeg);
+    const steeringOffsetDeg = Number(params.steeringAngleDeg ?? 0);
+    const beamDirRad =
+      radarMode === "beamforming"
+        ? degToRad(scanAngleDeg + steeringOffsetDeg)
+        : sweepRad;
+
+    // Build centered element emitters from sidebar geometry/spacing parameters.
     const nElem = Math.max(
       2,
       Math.min(128, Math.round(Number(params.numElements ?? 32))),
     );
-    const spacingPx = 5; // pixels between elements for visualisation
-    const geo = params.geometry ?? "linear";
-    const radiusLambda = Math.max(0.5, Number(params.radius ?? 5));
-    ctx.fillStyle = "hsla(270,60%,70%,0.55)";
-    if (geo === "curved") {
-      // Draw arc of elements at bottom of display
-      const arcR = Math.min(radius * 0.18, nElem * spacingPx * 0.5);
-      const arcHalf = ((nElem - 1) * spacingPx * 0.5) / arcR;
-      for (let i = 0; i < nElem; i++) {
-        const a = -arcHalf + (i / (nElem - 1)) * 2 * arcHalf;
-        const ex = cx + arcR * Math.sin(a);
-        const ey = cy + arcR + radius * 0.72;
-        if (ey > size - 4 || ex < 4 || ex > size - 4) continue;
+    const wavelength = Math.max(0.01, Number(params.wavelength ?? 1.0));
+    const spacingOverLambda = Math.max(
+      0.01,
+      Number(params.spacing ?? 0.5) / wavelength,
+    );
+    const wType =
+      (params.apodizationEnabled ? params.windowType : "rectangular") ??
+      "rectangular";
+    const elementWeights = makeWindowWeights(wType, nElem);
+
+    const localElements: Array<{
+      xLambda: number;
+      yLambda: number;
+      weight: number;
+      steerPhaseRad: number;
+      phaseColorRad: number;
+      phaseCycles: number;
+    }> = [];
+
+    // Arrange all elements as a centered circular ring.
+    const ringRadiusPx = 20;
+    const ringRadiusLambda = Math.max(
+      0.3,
+      (nElem * Math.max(0.01, spacingOverLambda)) / (2 * Math.PI),
+    );
+    for (let i = 0; i < nElem; i++) {
+      const a = -Math.PI / 2 + (i / nElem) * 2 * Math.PI;
+      const xLambda = ringRadiusLambda * Math.cos(a);
+      const yLambda = ringRadiusLambda * Math.sin(a);
+      // phi_n = 2pi * (x_n cos(theta) + y_n sin(theta)) / lambda.
+      // xLambda/yLambda are already normalized by lambda.
+      const phaseColorRad =
+        2 * Math.PI * (xLambda * Math.cos(beamDirRad) + yLambda * Math.sin(beamDirRad));
+      const steerPhaseRad = -phaseColorRad;
+      const phaseCycles = ((steerPhaseRad / (2 * Math.PI)) % 1 + 1) % 1;
+      localElements.push({
+        xLambda,
+        yLambda,
+        weight: Math.max(1e-6, Math.abs(elementWeights[i] ?? 0)),
+        steerPhaseRad,
+        phaseColorRad,
+        phaseCycles,
+      });
+    }
+
+    const pxPerLambda = ringRadiusPx / ringRadiusLambda;
+    const elementEmitters = localElements.map((el) => ({
+      ...el,
+      x: cx + el.xLambda * pxPerLambda,
+      y: cy + el.yLambda * pxPerLambda,
+    }));
+    const maxAbsPhaseColorRad = Math.max(
+      1e-9,
+      ...elementEmitters.map((e) => Math.abs(e.phaseColorRad)),
+    );
+
+    // Faint per-element semicircular wavefronts propagating in current beam direction.
+    if (elementEmitters.length > 0) {
+      const nowS = nowMs / 1000;
+      const waveRateHz = 1.2 + Math.min(2.1, scanSpeed * 0.2);
+      const ringCount = radarMode === "beamforming" ? 3 : 2;
+      const maxWaveRadius = radius * (radarMode === "beamforming" ? 0.95 : 0.8);
+      const arcStart = beamDirRad - Math.PI / 2;
+      const arcEnd = beamDirRad + Math.PI / 2;
+
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      for (const em of elementEmitters) {
+        const emitterAlphaBase = Math.min(0.48, 0.12 + em.weight * 1.8);
+        for (let ring = 0; ring < ringCount; ring++) {
+          const phase = nowS * waveRateHz + em.phaseCycles - ring / ringCount;
+          const wrapped = phase - Math.floor(phase);
+          const pulseRadius = 2 + wrapped * maxWaveRadius;
+          const fade = Math.pow(1 - wrapped, 1.28);
+          const alpha =
+            fade *
+            emitterAlphaBase *
+            (radarMode === "beamforming" ? 0.58 : 0.42);
+          if (alpha < 0.012) continue;
+          ctx.strokeStyle = `hsla(272,88%,74%,${alpha})`;
+          ctx.lineWidth = 0.55 + em.weight * (1.25 - wrapped * 0.45);
+          ctx.beginPath();
+          ctx.arc(em.x, em.y, pulseRadius, arcStart, arcEnd);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+    }
+
+    // Beam rendering: single filled rotating wedge tied to beam width.
+    const beamWidthRad = degToRad(Math.max(1, Number(beamWidth ?? 10)));
+    const halfBeam = beamWidthRad / 2;
+    const beamStart = beamDirRad - halfBeam;
+    const beamEnd = beamDirRad + halfBeam;
+    const wedgeHue = radarMode === "mechanical" ? 120 : 270;
+    const wedgeGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
+    wedgeGrad.addColorStop(0, `hsla(${wedgeHue},85%,70%,0.34)`);
+    wedgeGrad.addColorStop(0.5, `hsla(${wedgeHue},85%,62%,0.20)`);
+    wedgeGrad.addColorStop(1, `hsla(${wedgeHue},85%,58%,0.06)`);
+
+    ctx.fillStyle = wedgeGrad;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, radius, beamStart, beamEnd);
+    ctx.closePath();
+    ctx.fill();
+
+    // Array support and element dots (kept visible above beam layers).
+    if (elementEmitters.length > 0) {
+      ctx.strokeStyle = "hsla(270,65%,75%,0.28)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = 0; i < elementEmitters.length; i++) {
+        const p = elementEmitters[i];
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+
+      for (const em of elementEmitters) {
+        const dotR = 1.5 + Math.min(1.8, Math.sqrt(em.weight) * 3.2);
+        const phaseNorm = Math.max(
+          -1,
+          Math.min(1, em.phaseColorRad / maxAbsPhaseColorRad),
+        );
+        const blue = { r: 70, g: 130, b: 245 };
+        const neutral = { r: 228, g: 230, b: 236 };
+        const red = { r: 235, g: 86, b: 86 };
+        const mix = (
+          a: { r: number; g: number; b: number },
+          b: { r: number; g: number; b: number },
+          t: number,
+        ) => ({
+          r: Math.round(a.r + (b.r - a.r) * t),
+          g: Math.round(a.g + (b.g - a.g) * t),
+          b: Math.round(a.b + (b.b - a.b) * t),
+        });
+        const col =
+          phaseNorm < 0
+            ? mix(blue, neutral, phaseNorm + 1)
+            : mix(neutral, red, phaseNorm);
+        ctx.fillStyle = `rgba(${col.r},${col.g},${col.b},0.96)`;
         ctx.beginPath();
-        ctx.arc(ex, ey, 1.5, 0, Math.PI * 2);
+        ctx.arc(em.x, em.y, dotR, 0, Math.PI * 2);
         ctx.fill();
       }
-    } else {
-      // Linear array at bottom
-      const totalW = (nElem - 1) * spacingPx;
-      for (let i = 0; i < nElem; i++) {
-        const ex = cx - totalW / 2 + i * spacingPx;
-        const ey = cy + radius * 0.88;
-        if (ey > size - 4) continue;
-        ctx.beginPath();
-        ctx.arc(ex, ey, 1.5, 0, Math.PI * 2);
-        ctx.fill();
-      }
+
+      // Phase legend near the array center.
+      const legendW = 126;
+      const legendH = 8;
+      const legendX = Math.max(10, Math.min(size - legendW - 10, cx - legendW / 2));
+      const legendY = Math.max(10, Math.min(size - 20, cy + radius * 0.2));
+
+      ctx.fillStyle = "hsla(240,10%,8%,0.55)";
+      ctx.fillRect(legendX - 4, legendY - 16, legendW + 8, legendH + 22);
+
+      const phaseLegend = ctx.createLinearGradient(legendX, 0, legendX + legendW, 0);
+      phaseLegend.addColorStop(0, "rgb(70,130,245)");
+      phaseLegend.addColorStop(0.5, "rgb(228,230,236)");
+      phaseLegend.addColorStop(1, "rgb(235,86,86)");
+      ctx.fillStyle = phaseLegend;
+      ctx.fillRect(legendX, legendY, legendW, legendH);
+      ctx.strokeStyle = "hsla(240,8%,85%,0.45)";
+      ctx.lineWidth = 0.8;
+      ctx.strokeRect(legendX, legendY, legendW, legendH);
+
+      ctx.fillStyle = "hsla(240,8%,86%,0.92)";
+      ctx.font = "8px JetBrains Mono";
+      ctx.textAlign = "center";
+      ctx.fillText("Lagging (blue) -> Leading (red)", legendX + legendW / 2, legendY - 4);
+      ctx.textAlign = "left";
     }
 
     // Central icon
     ctx.fillStyle = "hsla(270,70%,60%,0.9)";
     ctx.beginPath();
-    ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 5.5, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = "hsla(270,70%,80%,0.6)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.arc(cx, cy, 10, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 9.5, 0, Math.PI * 2);
     ctx.stroke();
-
-    const sweepRad = degToRad(scanAngleDeg);
-
-    if (radarMode === "mechanical") {
-      // Simple rotating sweep line — no physics, just angle increment per frame
-      const sg = ctx.createLinearGradient(
-        cx,
-        cy,
-        cx + Math.cos(sweepRad) * radius,
-        cy + Math.sin(sweepRad) * radius,
-      );
-      sg.addColorStop(0, "hsla(120,100%,65%,0.95)");
-      sg.addColorStop(1, "hsla(120,100%,65%,0.05)");
-      ctx.strokeStyle = sg;
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(
-        cx + Math.cos(sweepRad) * radius,
-        cy + Math.sin(sweepRad) * radius,
-      );
-      ctx.stroke();
-    } else {
-      // Beamforming: AF lobe with SNR-dependent noise on beam edges
-      const nElemLobe = Math.max(
-        2,
-        Math.min(128, Math.round(Number(params.numElements ?? 32))),
-      );
-      const wavelength = Math.max(0.01, Number(params.wavelength ?? 1.0));
-      const dOverLambda = Number(params.spacing ?? 0.5) / wavelength;
-      const wType =
-        (params.apodizationEnabled ? params.windowType : "rectangular") ??
-        "rectangular";
-      const weights = makeWindowWeights(wType, nElemLobe);
-      // Phase shifts computed from current scan angle every frame (spec requirement)
-      const steeringDeg = scanAngleDeg;
-      const phaseOffsetRad =
-        2 * Math.PI * dOverLambda * Math.sin(degToRad(steeringDeg));
-      const amplitude = Math.max(0.01, Number(params.amplitude ?? 1.0));
-      const geometry = params.geometry ?? "linear";
-      const radiusOverLambda = Math.max(0.5, Number(params.radius ?? 5));
-      const snrDb = Number(params.snrDb ?? 15);
-      // Noise perturbation for beam edge fuzziness: larger at low SNR
-      const snrLinearCanvas = Math.pow(10, snrDb / 20);
-      const edgeNoiseFrac = Math.min(0.5, 1 / snrLinearCanvas);
-
-      // Compute clean AF points
-      const pts: { ang: number; r: number }[] = [];
-      let peak = 1e-9;
-      for (let i = 0; i < 241; i++) {
-        const relDeg = -90 + (180 * i) / 240;
-        const relRad = degToRad(relDeg);
-        const af = computeArrayFactor(
-          nElemLobe,
-          dOverLambda,
-          relRad,
-          weights,
-          phaseOffsetRad,
-          geometry,
-          radiusOverLambda,
-        );
-        if (af > peak) peak = af;
-        pts.push({ ang: relRad, r: af });
-      }
-      const lobeScale = radius * 0.92;
-      const lobeAlpha = Math.min(0.35, Math.max(0.03, 0.09 * amplitude));
-
-      // ── Filled lobe (clean, no noise perturbation) ──────────────────────────
-      ctx.fillStyle = `hsla(270,70%,55%,${lobeAlpha})`;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      for (const p of pts) {
-        const rr = lobeScale * Math.pow(Math.max(0, p.r / peak), 0.65);
-        const ang = sweepRad + p.ang;
-        ctx.lineTo(cx + Math.cos(ang) * rr, cy + Math.sin(ang) * rr);
-      }
-      ctx.closePath();
-      ctx.fill();
-
-      // ── Noisy outline — scatter individual points along the lobe edge ────────
-      // At high SNR: draw a clean stroke.
-      // At low SNR: skip the stroke and draw scattered dots instead, giving
-      //             the appearance of a fuzzy, uncertain beam boundary.
-      if (snrDb >= 25) {
-        // Clean outline
-        ctx.strokeStyle = `hsla(270,80%,72%,${Math.min(0.9, Math.max(0.2, 0.5 * amplitude))})`;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        for (let i = 0; i < pts.length; i++) {
-          const rr = lobeScale * Math.pow(Math.max(0, pts[i].r / peak), 0.65);
-          const ang = sweepRad + pts[i].ang;
-          const px = cx + Math.cos(ang) * rr;
-          const py = cy + Math.sin(ang) * rr;
-          if (i === 0) ctx.moveTo(px, py);
-          else ctx.lineTo(px, py);
-        }
-        ctx.stroke();
-      } else {
-        // Fuzzy scattered dots along lobe boundary — density drops with SNR
-        const dotAlpha = Math.min(0.8, Math.max(0.15, 0.5 * amplitude));
-        for (let i = 0; i < pts.length; i++) {
-          // Skip some points randomly at very low SNR to thin the outline
-          if (Math.random() > 0.4 + snrDb / 50) continue;
-          const cleanR =
-            lobeScale * Math.pow(Math.max(0, pts[i].r / peak), 0.65);
-          // Add random radial perturbation proportional to noise level
-          const perturbR =
-            cleanR * (1 + edgeNoiseFrac * (Math.random() - 0.5) * 2);
-          // Add small angular jitter
-          const angJitter = edgeNoiseFrac * 0.04 * (Math.random() - 0.5);
-          const ang = sweepRad + pts[i].ang + angJitter;
-          const px = cx + Math.cos(ang) * perturbR;
-          const py = cy + Math.sin(ang) * perturbR;
-          ctx.fillStyle = `hsla(270,80%,72%,${dotAlpha * Math.random()})`;
-          ctx.beginPath();
-          ctx.arc(px, py, 1, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-
-      // ── Sweep ray ────────────────────────────────────────────────────────────
-      const grad = ctx.createLinearGradient(
-        cx,
-        cy,
-        cx + Math.cos(sweepRad) * radius,
-        cy + Math.sin(sweepRad) * radius,
-      );
-      grad.addColorStop(0, "hsla(270,75%,65%,0.85)");
-      grad.addColorStop(1, "hsla(270,75%,65%,0)");
-      ctx.strokeStyle = grad;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(
-        cx + Math.cos(sweepRad) * radius,
-        cy + Math.sin(sweepRad) * radius,
-      );
-      ctx.stroke();
-
-      // ── Scatter noise particles around lobe edge at low SNR ─────────────────
-      // These are independent random dots that simulate receiver noise appearing
-      // in the displayed beam pattern.
-      if (snrDb < 20) {
-        const nParticles = Math.floor((20 - snrDb) * 3);
-        for (let p = 0; p < nParticles; p++) {
-          // Random point near the lobe boundary
-          const ptIdx = Math.floor(Math.random() * pts.length);
-          const baseR =
-            lobeScale * Math.pow(Math.max(0, pts[ptIdx].r / peak), 0.65);
-          const rr = baseR * (0.5 + Math.random() * 1.0);
-          const ang = sweepRad + pts[ptIdx].ang + (Math.random() - 0.5) * 0.15;
-          const px = cx + Math.cos(ang) * rr;
-          const py = cy + Math.sin(ang) * rr;
-          const pAlpha = Math.random() * edgeNoiseFrac * 0.6;
-          ctx.fillStyle = `hsla(270,60%,80%,${pAlpha})`;
-          ctx.beginPath();
-          ctx.arc(px, py, 1.5, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-    }
-
     // HUD
     const wHUD = Math.max(0.01, Number(params.wavelength ?? 1.0));
     const dHUD = Number(params.spacing ?? 0.5) / wHUD;
@@ -1205,7 +1233,7 @@ export default function SimulatorRadar() {
     ctx.fillText(`θ: ${effHUD.toFixed(1)}°`, 14, 22);
     ctx.fillText(`Δφ: ${dPhi.toFixed(2)} rad`, 14, 38);
     ctx.fillText(
-      `${scanSpeed.toFixed(1)}°/f  ${(params.geometry ?? "linear").toUpperCase()}`,
+      `${scanSpeed.toFixed(1)}°/s  ${(params.geometry ?? "linear").toUpperCase()}`,
       14,
       54,
     );
@@ -1225,6 +1253,7 @@ export default function SimulatorRadar() {
     selectedTargetId,
     radarMode,
     scanSpeed,
+    beamWidth,
     // snrDb is read from params above, so params dep covers it.
     // Explicitly list it to make the dependency clear to React.
   ]);
@@ -1448,6 +1477,117 @@ export default function SimulatorRadar() {
 
   // ─── Utilities ────────────────────────────────────────────────────────────────
 
+  // ─── Radar Heatmap Data ────────────────────────────────────────────────────────
+  const interferenceHeatmapData = useMemo(() => {
+    if (radarViewMode !== "heatmap") {
+      return { grid: [[0]], xRange: [0], yRange: [0], maxVal: 1, extent: 1 };
+    }
+
+    const GRID_N = 120; // Resolution
+    const C = 3e8; // Speed of light
+    
+    const ext = Math.max(1, DETECTION_RANGE_M);
+    const spanX = 2 * ext;
+    const spanY = 2 * ext;
+    const xRange = Array.from({ length: GRID_N }, (_, i) => -ext + (i / (GRID_N - 1)) * spanX);
+    const yRange = Array.from({ length: GRID_N }, (_, i) => -ext + (i / (GRID_N - 1)) * spanY);
+
+    const nElem = Math.max(2, Math.min(128, Math.round(Number(params.numElements ?? 32))));
+    const freqHz = Number(params.frequency ?? 10e9);
+    const wavelength = Math.max(1e-9, C / Math.max(1.0, freqHz));
+    const spacingMeters = Math.max(1e-6, Number(params.spacing ?? 0.5) * wavelength);
+    const amplitude = Math.max(1e-6, Number(params.amplitude ?? 1.0));
+    
+    const wType = (params.apodizationEnabled ? params.windowType : "rectangular") ?? "rectangular";
+    const weights = makeWindowWeights(wType, nElem);
+    const wNorm = Math.max(1e-9, weights.reduce((s, w) => s + Math.abs(w), 0));
+    const kWave = (2 * Math.PI) / wavelength;
+
+    const steeringOffsetDeg = Number(params.steeringAngleDeg ?? 0);
+    const sweepRad = degToRad(scanAngleDeg);
+    const beamDirRad = radarMode === "beamforming" ? degToRad(scanAngleDeg + steeringOffsetDeg) : sweepRad;
+    const geometry = params.geometry ?? "linear";
+    const radiusOverLambda = Math.max(0.5, Number(params.radius ?? 5));
+    const ringRadiusMeters = radiusOverLambda * wavelength;
+
+    const elementEmitters: Array<{ x: number; y: number; amp: number; phase: number; k: number }> = [];
+
+    if (geometry === "curved") {
+      for (let i = 0; i < nElem; i++) {
+        const a = -Math.PI / 2 + (i / nElem) * 2 * Math.PI;
+        const ex = ringRadiusMeters * Math.cos(a);
+        const ey = ringRadiusMeters * Math.sin(a);
+        const steerPhase = kWave * (ex * Math.cos(beamDirRad) + ey * Math.sin(beamDirRad));
+        const phase = -steerPhase;
+        const elemAmp = amplitude * ((weights[i] ?? 1) / wNorm);
+        elementEmitters.push({ x: ex, y: ey, amp: elemAmp, phase, k: kWave });
+      }
+    } else {
+      const centerOffset = (nElem - 1) / 2;
+      for (let i = 0; i < nElem; i++) {
+        const offset = (i - centerOffset) * spacingMeters;
+        const ex = 0;
+        const ey = offset;
+        const phase = -kWave * (ex * Math.cos(beamDirRad) + ey * Math.sin(beamDirRad));
+        const elemAmp = amplitude * ((weights[i] ?? 1) / wNorm);
+        elementEmitters.push({ x: ex, y: ey, amp: elemAmp, phase, k: kWave });
+      }
+    }
+
+    const rawGrid: number[][] = [];
+    const flatVals: number[] = [];
+
+    for (let yi = 0; yi < GRID_N; yi++) {
+      const y = yRange[GRID_N - 1 - yi];
+      const row: number[] = [];
+      for (let xi = 0; xi < GRID_N; xi++) {
+        const x = xRange[xi];
+        let real = 0;
+        let imag = 0;
+        for (const em of elementEmitters) {
+          const dx = x - em.x;
+          const dy = y - em.y;
+          const r = Math.max(1e-6, Math.hypot(dx, dy));
+          const phase = (em.k * r) + em.phase;
+          const a = em.amp / Math.sqrt(r);
+          real += a * Math.cos(phase);
+          imag += a * Math.sin(phase);
+        }
+        const intensity = real * real + imag * imag;
+        row.push(intensity);
+        flatVals.push(intensity);
+      }
+      rawGrid.push(row);
+    }
+
+    flatVals.sort((a, b) => a - b);
+    const p = 0.99;
+    const idx = Math.min(flatVals.length - 1, Math.max(0, Math.floor(p * (flatVals.length - 1))));
+    const maxVal = Math.max(1e-12, flatVals[idx] ?? 1e-12);
+
+    return {
+      grid: rawGrid,
+      xRange,
+      yRange,
+      maxVal: Math.max(1e-9, maxVal),
+      extent: Math.max(spanX, spanY),
+    };
+  }, [
+    params.numElements,
+    params.spacing,
+    params.wavelength,
+    params.windowType,
+    params.apodizationEnabled,
+    params.steeringAngleDeg,
+    params.amplitude,
+    params.frequency,
+    params.geometry,
+    params.radius,
+    scanAngleDeg,
+    radarMode,
+    radarViewMode
+  ]);
+
   const clearChartData = useCallback(() => {
     detectionHistoryRef.current = [];
     setDetectionHistory([]);
@@ -1483,15 +1623,15 @@ export default function SimulatorRadar() {
                 clearChartData();
                 if (s === "quick") {
                   setBeamWidth(22);
-                  setScanSpeed(6.0);
+                  setScanSpeed(180.0);
                 }
                 if (s === "precision") {
                   setBeamWidth(4);
-                  setScanSpeed(1.0);
+                  setScanSpeed(35.0);
                 }
                 if (s === "multi") {
                   setBeamWidth(14);
-                  setScanSpeed(3.0);
+                  setScanSpeed(90.0);
                   const base = performance.now();
                   const preset: PlacedTarget[] = [
                     {
@@ -1571,14 +1711,14 @@ export default function SimulatorRadar() {
             Scan Speed
           </Label>
           <span className="text-xs font-mono text-foreground tabular-nums">
-            {scanSpeed.toFixed(1)}°/frame
+            {scanSpeed.toFixed(1)}°/second
           </span>
         </div>
         <Slider
           value={[scanSpeed]}
-          min={0.5}
-          max={10}
-          step={0.5}
+          min={10}
+          max={240}
+          step={5}
           onValueChange={([v]) => setScanSpeed(v)}
         />
       </div>
@@ -1661,7 +1801,10 @@ export default function SimulatorRadar() {
     return (
       <MainLayout
         controlPanel={
-          <ControlPanel params={params} onParamChange={updateParam} />
+          <ControlPanel
+            params={{ ...params, steeringAngleDeg: Math.round(scanAngleDeg) }}
+            onParamChange={updateParam}
+          />
         }
       >
         <Alert variant="destructive" className="m-4">
@@ -1698,7 +1841,7 @@ export default function SimulatorRadar() {
     <MainLayout
       controlPanel={
         <ControlPanel
-          params={params}
+          params={{ ...params, steeringAngleDeg: Math.round(scanAngleDeg) }}
           onParamChange={updateParam}
           extra={extraControls}
         />
@@ -1747,16 +1890,29 @@ export default function SimulatorRadar() {
 
         {/* ── PPI Radar Screen ───────────────────────────────────────────────── */}
         <div className="glass-panel p-3 flex flex-col">
-          <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-            PPI Radar Screen (Plan Position Indicator)
-          </h3>
-          <div className="flex-1 min-h-0 flex items-center justify-center">
-            <canvas
-              ref={ppiCanvasRef}
-              className="radar-canvas rounded-lg max-w-full max-h-full"
-            />
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground">
+              {radarViewMode === "heatmap" ? "Interference Heatmap" : "PPI Radar Screen"}
+            </h3>
+            <button
+              type="button"
+              onClick={() => setRadarViewMode(prev => prev === "ppi" ? "heatmap" : "ppi")}
+              className="text-[9px] font-mono uppercase tracking-wider px-2 py-0.5 rounded border border-white/10 bg-white/5 hover:bg-white/10 transition-colors"
+            >
+              Show {radarViewMode === "heatmap" ? "PPI Screen" : "Heatmap"}
+            </button>
           </div>
-          {detectionHistory.length === 0 && (
+          <div className="flex-1 min-h-0 flex items-center justify-center relative">
+            {radarViewMode === "ppi" ? (
+              <canvas
+                ref={ppiCanvasRef}
+                className="radar-canvas rounded-lg max-w-full max-h-full"
+              />
+            ) : (
+              <HeatmapView data={interferenceHeatmapData} />
+            )}
+          </div>
+          {radarViewMode === "ppi" && detectionHistory.length === 0 && (
             <p className="text-[10px] font-mono text-muted-foreground/60 text-center mt-1">
               Place targets on the scan display — detections appear here as
               glowing dots
