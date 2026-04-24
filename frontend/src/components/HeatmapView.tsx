@@ -64,11 +64,8 @@ export default function HeatmapView({ data, title = "Interference Heatmap" }: He
     canvas.height = Math.max(1, Math.floor(size.height * dpr));
     const ctx = canvas.getContext("2d")!;
     const offscreen = document.createElement("canvas");
-    // Show the top 58% of the displayed field.
-    const TOP_FRACTION = 0.50;
-    const sourceH = Math.max(1, Math.floor(gridSize * TOP_FRACTION));
     offscreen.width = gridSize;
-    offscreen.height = sourceH;
+    offscreen.height = gridSize;
     const offCtx = offscreen.getContext("2d")!;
     const imageData = offCtx.createImageData(offscreen.width, offscreen.height);
 
