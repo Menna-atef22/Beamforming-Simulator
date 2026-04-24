@@ -4,5 +4,5 @@
 }
 
 .heatmap-gradient {
-  background: linear-gradient(to right, #0f0820, #5a1070, #c83898, #ffcce0);
+  background: linear-gradient(to right, #000000 0%, #3c0050 30%, #b400dc 70%, #ffffff 100%);
 }

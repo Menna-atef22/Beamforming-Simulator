@@ -8,25 +8,33 @@ interface HeatmapViewProps {
 }
 
 function valueToColor(value: number, max: number): [number, number, number] {
-  // Intensity heatmap: near-zero should be nearly black.
-  const safeMax = Math.max(max, 1e-12);
-  const v = Math.max(0, value);
-  // Log compression + gamma darkens background.
-  const tLog = Math.min(Math.log1p(v) / Math.log1p(safeMax), 1);
-  const t = Math.pow(tLog, 2.2);
-  // black → deep purple → magenta → pink → white
-  if (t < 0.2) {
-    const s = t / 0.2;
-    return [Math.round(2 + s * 18), Math.round(1 + s * 6), Math.round(4 + s * 28)];
-  } else if (t < 0.5) {
-    const s = (t - 0.2) / 0.3;
-    return [Math.round(20 + s * 90), Math.round(7 + s * 18), Math.round(32 + s * 90)];
-  } else if (t < 0.8) {
-    const s = (t - 0.5) / 0.3;
-    return [Math.round(110 + s * 95), Math.round(25 + s * 55), Math.round(122 + s * 50)];
+  // Enhanced contrast palette: Black (0.0) -> Dark Purple (0.3) -> Bright Purple (0.7) -> White (1.0)
+  const t = Math.max(0, Math.min(1, value / (max || 1)));
+  
+  if (t < 0.3) {
+    // 0.0 to 0.3: Black [0,0,0] to Dark Purple [60,0,80]
+    const s = t / 0.3;
+    return [
+      Math.round(s * 60),
+      0,
+      Math.round(s * 80)
+    ];
+  } else if (t < 0.7) {
+    // 0.3 to 0.7: Dark Purple [60,0,80] to Bright Purple [180,0,220]
+    const s = (t - 0.3) / 0.4;
+    return [
+      Math.round(60 + s * 120),
+      0,
+      Math.round(80 + s * 140)
+    ];
   } else {
-    const s = (t - 0.8) / 0.2;
-    return [Math.round(205 + s * 50), Math.round(80 + s * 175), Math.round(172 + s * 83)];
+    // 0.7 to 1.0: Bright Purple [180,0,220] to White [255,255,255]
+    const s = (t - 0.7) / 0.3;
+    return [
+      Math.round(180 + s * 75),
+      Math.round(s * 255),
+      Math.round(220 + s * 35)
+    ];
   }
 }
 

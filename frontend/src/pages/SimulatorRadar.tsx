@@ -267,15 +267,16 @@ export default function SimulatorRadar() {
   // ── Scan controls ────────────────────────────────────────────────────────────
   const [beamWidth, setBeamWidth] = useState(10);
   const [scanSpeed, setScanSpeed] = useState(60.0);
-  const [radarMode, setRadarMode] = useState<"mechanical" | "beamforming">(
-    "beamforming",
-  );
-  const radarModeRef = useRef<"mechanical" | "beamforming">("beamforming");
+  const [scanDirection, setScanDirection] = useState<"cw" | "ccw">("cw");
+  const scanDirectionRef = useRef<"cw" | "ccw">("cw");
   const [radarViewMode, setRadarViewMode] = useState<"ppi" | "heatmap">("ppi");
 
   // ── Scan angle ───────────────────────────────────────────────────────────────
   const [scanAngleDeg, setScanAngleDeg] = useState(0);
   const scanAngleRef = useRef(0);
+  const [isScanning, setIsScanning] = useState(true);
+  const isScanningRef = useRef(true);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; targetId: string } | null>(null);
 
   // ── Targets ──────────────────────────────────────────────────────────────────
   const [placedTargets, setPlacedTargets] = useState<PlacedTarget[]>([]);
@@ -321,7 +322,6 @@ export default function SimulatorRadar() {
     spacingOverLambda: number;
     windowType: string;
     apodizationEnabled: boolean;
-    radarMode: "mechanical" | "beamforming";
     beamWidthDeg: number;
     steeringOffsetDeg: number;
     amplitude: number;
@@ -336,7 +336,6 @@ export default function SimulatorRadar() {
     spacingOverLambda: 0.5,
     windowType: "rectangular",
     apodizationEnabled: false,
-    radarMode: "beamforming",
     beamWidthDeg: 10,
     steeringOffsetDeg: 0,
     amplitude: 1,
@@ -362,9 +361,8 @@ export default function SimulatorRadar() {
   }, [scanSpeed]);
 
   useEffect(() => {
-    radarModeRef.current = radarMode;
-    beamInsideRef.current.clear();
-  }, [radarMode]);
+    scanDirectionRef.current = scanDirection;
+  }, [scanDirection]);
 
   useEffect(() => {
     const wavelength = Math.max(0.01, Number(params.wavelength ?? 1.0));
@@ -384,7 +382,6 @@ export default function SimulatorRadar() {
         (params.apodizationEnabled ? params.windowType : "rectangular") ??
         "rectangular",
       apodizationEnabled: !!params.apodizationEnabled,
-      radarMode,
       beamWidthDeg: beamWidth,
       steeringOffsetDeg,
       amplitude: Math.max(0.01, Number(params.amplitude ?? 1.0)),
@@ -404,7 +401,6 @@ export default function SimulatorRadar() {
     params.snrDb,
     params.geometry,
     params.radius,
-    radarMode,
     beamWidth,
   ]);
 
@@ -463,7 +459,7 @@ export default function SimulatorRadar() {
   const runDetection = useCallback((sweepDeg: number, nowMs: number) => {
     const targets = placedTargetsRef.current;
     const dp = detParamsRef.current;
-    const currentMode = radarModeRef.current;
+    const currentMode = "beamforming";
     const beamWidthDeg = Math.max(1, dp.beamWidthDeg);
     const halfBeam = beamWidthDeg / 2;
 
@@ -618,11 +614,32 @@ export default function SimulatorRadar() {
         cleanSignal = (dp.amplitude * sv * sv) / (distM * distM);
       }
 
-      // SNR-weighted detection gate: the noisy received power must exceed threshold.
-      // noisySNR adds a random noise sample to determine if this particular
-      // detection attempt succeeds (models pulse-to-pulse fading).
+      // ── SNR-weighted detection gate ──────────────────────────────────────────
+      // Base physical model: the noisy received power must exceed threshold.
       const noisySNR = cleanSignal + noiseStd * gaussNoise();
-      const detected = noisySNR >= detectionThreshold;
+      let detected = noisySNR >= detectionThreshold;
+
+      // ── Heuristic SNR Overrides (User Requirement) ───────────────────────────
+      if (dp.snrDb >= 15) {
+        // Reliable detection at SNR ≥ 15dB regardless of distance.
+        detected = true;
+      } else if (dp.snrDb >= 5) {
+        // Below 15dB, detection probability decreases gradually.
+        const t = (dp.snrDb - 5) / 10; // 0 (at 5dB) to 1 (at 15dB)
+        const prob = 0.3 + 0.7 * t;
+        if (Math.random() > prob) detected = false;
+        // Never make all targets completely invisible above 10dB SNR.
+        if (dp.snrDb >= 10 && !detected && Math.random() < 0.6) detected = true;
+      } else {
+        // Below 5dB, far targets become undetectable.
+        const isClose = distM < 0.3 * DETECTION_RANGE_M;
+        if (!isClose) {
+          detected = false;
+        } else {
+          // Close targets (within 30% of max range) still have a chance.
+          if (Math.random() > 0.4) detected = false;
+        }
+      }
 
       if (detected) hitIds.add(t.id);
 
@@ -721,12 +738,17 @@ export default function SimulatorRadar() {
         prevMs == null ? 0 : Math.min(0.1, Math.max(0, (now - prevMs) / 1000));
       lastScanTickMsRef.current = now;
 
-      const nextAngle = clampAngleDeg360(
-        scanAngleRef.current + scanSpeedRef.current * dtSec,
-      );
-      scanAngleRef.current = nextAngle;
-      setScanAngleDeg(nextAngle);
-      runDetectionRef.current(nextAngle, now);
+      if (isScanningRef.current) {
+        const nextAngle = clampAngleDeg360(
+          scanAngleRef.current +
+            (scanDirectionRef.current === "cw" ? 1 : -1) *
+              scanSpeedRef.current *
+              dtSec,
+        );
+        scanAngleRef.current = nextAngle;
+        setScanAngleDeg(nextAngle);
+        runDetectionRef.current(nextAngle, now);
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -1028,10 +1050,7 @@ export default function SimulatorRadar() {
 
     const sweepRad = degToRad(scanAngleDeg);
     const steeringOffsetDeg = Number(params.steeringAngleDeg ?? 0);
-    const beamDirRad =
-      radarMode === "beamforming"
-        ? degToRad(scanAngleDeg + steeringOffsetDeg)
-        : sweepRad;
+    const beamDirRad = degToRad(scanAngleDeg + steeringOffsetDeg);
 
     // Build centered element emitters from sidebar geometry/spacing parameters.
     const nElem = Math.max(
@@ -1098,8 +1117,8 @@ export default function SimulatorRadar() {
     if (elementEmitters.length > 0) {
       const nowS = nowMs / 1000;
       const waveRateHz = 1.2 + Math.min(2.1, scanSpeed * 0.2);
-      const ringCount = radarMode === "beamforming" ? 3 : 2;
-      const maxWaveRadius = radius * (radarMode === "beamforming" ? 0.95 : 0.8);
+      const ringCount = 3;
+      const maxWaveRadius = radius * 0.95;
       const arcStart = beamDirRad - Math.PI / 2;
       const arcEnd = beamDirRad + Math.PI / 2;
 
@@ -1112,10 +1131,7 @@ export default function SimulatorRadar() {
           const wrapped = phase - Math.floor(phase);
           const pulseRadius = 2 + wrapped * maxWaveRadius;
           const fade = Math.pow(1 - wrapped, 1.28);
-          const alpha =
-            fade *
-            emitterAlphaBase *
-            (radarMode === "beamforming" ? 0.58 : 0.42);
+          const alpha = fade * emitterAlphaBase * 0.58;
           if (alpha < 0.012) continue;
           ctx.strokeStyle = `hsla(272,88%,74%,${alpha})`;
           ctx.lineWidth = 0.55 + em.weight * (1.25 - wrapped * 0.45);
@@ -1132,7 +1148,7 @@ export default function SimulatorRadar() {
     const halfBeam = beamWidthRad / 2;
     const beamStart = beamDirRad - halfBeam;
     const beamEnd = beamDirRad + halfBeam;
-    const wedgeHue = radarMode === "mechanical" ? 120 : 270;
+    const wedgeHue = 270;
     const wedgeGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius);
     wedgeGrad.addColorStop(0, `hsla(${wedgeHue},85%,70%,0.34)`);
     wedgeGrad.addColorStop(0.5, `hsla(${wedgeHue},85%,62%,0.20)`);
@@ -1238,12 +1254,9 @@ export default function SimulatorRadar() {
       54,
     );
     ctx.font = "bold 11px JetBrains Mono";
-    ctx.fillStyle =
-      radarMode === "mechanical"
-        ? "hsla(120,100%,58%,0.9)"
-        : "hsla(270,80%,72%,0.9)";
+    ctx.fillStyle = "hsla(270,80%,72%,0.9)";
     ctx.textAlign = "right";
-    ctx.fillText(radarMode === "mechanical" ? "MECH" : "BF", size - 14, 22);
+    ctx.fillText(scanDirection === "cw" ? "CW" : "CCW", size - 14, 22);
     ctx.textAlign = "left";
   }, [
     radar,
@@ -1251,7 +1264,7 @@ export default function SimulatorRadar() {
     scanAngleDeg,
     placedTargets,
     selectedTargetId,
-    radarMode,
+    scanDirection,
     scanSpeed,
     beamWidth,
     // snrDb is read from params above, so params dep covers it.
@@ -1297,6 +1310,7 @@ export default function SimulatorRadar() {
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
+      setContextMenu(null);
       const canvas = radarCanvasRef.current;
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
@@ -1357,6 +1371,10 @@ export default function SimulatorRadar() {
 
   const handleCanvasClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (contextMenu) {
+        setContextMenu(null);
+        return;
+      }
       if (dragRef.current?.moved) {
         dragRef.current = null;
         return;
@@ -1403,6 +1421,38 @@ export default function SimulatorRadar() {
     },
     [],
   );
+
+  const handleContextMenu = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const canvas = radarCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const cx = canvas.width / 2;
+    const cy = canvas.height / 2;
+    const radiusPx = canvas.width / 2 - 20;
+    const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+    for (const t of placedTargetsRef.current) {
+      const ta = degToRad(t.angleDeg);
+      const tr = (t.distanceM / DETECTION_RANGE_M) * radiusPx;
+      const tx = cx + Math.cos(ta) * tr;
+      const ty = cy + Math.sin(ta) * tr;
+      const pr = Math.max(4, (t.sizeM / DETECTION_RANGE_M) * radiusPx);
+      if (Math.hypot(mx - tx, my - ty) <= pr + 10) {
+        setContextMenu({ x: e.clientX, y: e.clientY, targetId: t.id });
+        return;
+      }
+    }
+    setContextMenu(null);
+  }, []);
+
+  const deleteTarget = useCallback((id: string) => {
+    const updated = placedTargetsRef.current.filter((t) => t.id !== id);
+    placedTargetsRef.current = updated;
+    setPlacedTargets(updated);
+    setContextMenu(null);
+  }, []);
 
   // ─── Derived chart data ───────────────────────────────────────────────────────
 
@@ -1483,7 +1533,7 @@ export default function SimulatorRadar() {
       return { grid: [[0]], xRange: [0], yRange: [0], maxVal: 1, extent: 1 };
     }
 
-    const GRID_N = 120; // Resolution
+    const GRID_N = 80; // Optimized resolution for performance
     const C = 3e8; // Speed of light
     
     const ext = Math.max(1, DETECTION_RANGE_M);
@@ -1505,7 +1555,7 @@ export default function SimulatorRadar() {
 
     const steeringOffsetDeg = Number(params.steeringAngleDeg ?? 0);
     const sweepRad = degToRad(scanAngleDeg);
-    const beamDirRad = radarMode === "beamforming" ? degToRad(scanAngleDeg + steeringOffsetDeg) : sweepRad;
+    const beamDirRad = degToRad(scanAngleDeg + steeringOffsetDeg);
     const geometry = params.geometry ?? "linear";
     const radiusOverLambda = Math.max(0.5, Number(params.radius ?? 5));
     const ringRadiusMeters = radiusOverLambda * wavelength;
@@ -1514,7 +1564,7 @@ export default function SimulatorRadar() {
 
     if (geometry === "curved") {
       for (let i = 0; i < nElem; i++) {
-        const a = -Math.PI / 2 + (i / nElem) * 2 * Math.PI;
+        const a = (i / nElem) * 2 * Math.PI;
         const ex = ringRadiusMeters * Math.cos(a);
         const ey = ringRadiusMeters * Math.sin(a);
         const steerPhase = kWave * (ex * Math.cos(beamDirRad) + ey * Math.sin(beamDirRad));
@@ -1526,44 +1576,45 @@ export default function SimulatorRadar() {
       const centerOffset = (nElem - 1) / 2;
       for (let i = 0; i < nElem; i++) {
         const offset = (i - centerOffset) * spacingMeters;
-        const ex = 0;
-        const ey = offset;
-        const phase = -kWave * (ex * Math.cos(beamDirRad) + ey * Math.sin(beamDirRad));
+        const ex = offset;
+        const ey = 0;
+        const steerPhase = kWave * (ex * Math.cos(beamDirRad) + ey * Math.sin(beamDirRad));
+        const phase = -steerPhase;
         const elemAmp = amplitude * ((weights[i] ?? 1) / wNorm);
         elementEmitters.push({ x: ex, y: ey, amp: elemAmp, phase, k: kWave });
       }
     }
 
+
+    const maxR = DETECTION_RANGE_M;
     const rawGrid: number[][] = [];
-    const flatVals: number[] = [];
 
     for (let yi = 0; yi < GRID_N; yi++) {
-      const y = yRange[GRID_N - 1 - yi];
+      const py = yRange[GRID_N - 1 - yi];
       const row: number[] = [];
       for (let xi = 0; xi < GRID_N; xi++) {
-        const x = xRange[xi];
+        const px = xRange[xi];
+        const theta = Math.atan2(py, px);
+        const r = Math.hypot(px, py);
+
         let real = 0;
         let imag = 0;
         for (const em of elementEmitters) {
-          const dx = x - em.x;
-          const dy = y - em.y;
-          const r = Math.max(1e-6, Math.hypot(dx, dy));
-          const phase = (em.k * r) + em.phase;
-          const a = em.amp / Math.sqrt(r);
-          real += a * Math.cos(phase);
-          imag += a * Math.sin(phase);
+          // Array Factor contribution in direction theta including steering phase
+          const phase = (em.k * (em.x * Math.cos(theta) + em.y * Math.sin(theta))) + em.phase;
+          real += em.amp * Math.cos(phase);
+          imag += em.amp * Math.sin(phase);
         }
-        const intensity = real * real + imag * imag;
+
+        const AF = Math.sqrt(real * real + imag * imag) / (amplitude || 1);
+        // Apply distance falloff: intensity = AF * exp(-r/maxR)
+        const intensity = Math.min(1, AF * Math.exp(-r / (maxR * 0.8)));
         row.push(intensity);
-        flatVals.push(intensity);
       }
       rawGrid.push(row);
     }
 
-    flatVals.sort((a, b) => a - b);
-    const p = 0.99;
-    const idx = Math.min(flatVals.length - 1, Math.max(0, Math.floor(p * (flatVals.length - 1))));
-    const maxVal = Math.max(1e-12, flatVals[idx] ?? 1e-12);
+    const maxVal = 1.0;
 
     return {
       grid: rawGrid,
@@ -1584,7 +1635,6 @@ export default function SimulatorRadar() {
     params.geometry,
     params.radius,
     scanAngleDeg,
-    radarMode,
     radarViewMode
   ]);
 
@@ -1600,6 +1650,67 @@ export default function SimulatorRadar() {
 
   // ─── Extra controls ───────────────────────────────────────────────────────────
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const exportState = useCallback(() => {
+    const state = {
+      params,
+      placedTargets,
+      scanDirection,
+      beamWidth,
+      scanSpeed,
+      radarViewMode,
+      isScanning,
+      scanAngleDeg,
+    };
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `radar-state-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }, [params, placedTargets, scanDirection, beamWidth, scanSpeed, radarViewMode, isScanning, scanAngleDeg]);
+
+  const importState = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const state = JSON.parse(ev.target?.result as string);
+        if (state.params) setParams(state.params);
+        if (state.placedTargets) {
+          placedTargetsRef.current = state.placedTargets;
+          setPlacedTargets(state.placedTargets);
+        }
+        if (state.scanDirection) {
+          setScanDirection(state.scanDirection);
+          scanDirectionRef.current = state.scanDirection;
+        }
+        if (state.beamWidth !== undefined) setBeamWidth(state.beamWidth);
+        if (state.scanSpeed !== undefined) {
+          setScanSpeed(state.scanSpeed);
+          scanSpeedRef.current = state.scanSpeed;
+        }
+        if (state.radarViewMode) setRadarViewMode(state.radarViewMode);
+        if (state.isScanning !== undefined) {
+          setIsScanning(state.isScanning);
+          isScanningRef.current = state.isScanning;
+        }
+        if (state.scanAngleDeg !== undefined) {
+          setScanAngleDeg(state.scanAngleDeg);
+          scanAngleRef.current = state.scanAngleDeg;
+        }
+        clearChartData();
+      } catch (err) {
+        console.error("Failed to import radar state:", err);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }, [clearChartData]);
+
   const extraControls = (
     <>
       {/* Scenario presets */}
@@ -1612,6 +1723,32 @@ export default function SimulatorRadar() {
             {scenario}
           </span>
         </div>
+
+        <input
+          type="file"
+          ref={fileInputRef}
+          className="hidden"
+          accept=".json"
+          onChange={importState}
+        />
+
+        <div className="grid grid-cols-2 gap-2 mb-2">
+          <button
+            type="button"
+            onClick={exportState}
+            className="h-8 text-[10px] font-mono uppercase tracking-wider rounded-md border border-primary/20 bg-primary/10 text-primary hover:bg-primary/20 transition-colors flex items-center justify-center gap-1.5"
+          >
+            <span className="text-xs">⤓</span> Export JSON
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="h-8 text-[10px] font-mono uppercase tracking-wider rounded-md border border-white/15 bg-white/5 hover:bg-white/10 transition-colors flex items-center justify-center gap-1.5"
+          >
+            <span className="text-xs">⤒</span> Import JSON
+          </button>
+        </div>
+
         <div className="grid grid-cols-3 gap-2">
           {(["quick", "precision", "multi"] as const).map((s) => (
             <button
@@ -1624,10 +1761,22 @@ export default function SimulatorRadar() {
                 if (s === "quick") {
                   setBeamWidth(22);
                   setScanSpeed(180.0);
+                  const base = performance.now();
+                  const preset: PlacedTarget[] = [
+                    { id: `Q1-${base}`, angleDeg: 45, distanceM: 6.0, sizeM: 0.5, lastHitMs: 0 },
+                  ];
+                  placedTargetsRef.current = preset;
+                  setPlacedTargets(preset);
                 }
                 if (s === "precision") {
                   setBeamWidth(4);
                   setScanSpeed(35.0);
+                  const base = performance.now();
+                  const preset: PlacedTarget[] = [
+                    { id: `P1-${base}`, angleDeg: 120, distanceM: 8.5, sizeM: 0.2, lastHitMs: 0 },
+                  ];
+                  placedTargetsRef.current = preset;
+                  setPlacedTargets(preset);
                 }
                 if (s === "multi") {
                   setBeamWidth(14);
@@ -1816,10 +1965,7 @@ export default function SimulatorRadar() {
 
   // ─── Render ───────────────────────────────────────────────────────────────────
 
-  const panelTitle =
-    radarMode === "mechanical"
-      ? "Radar Scan (Mechanical)"
-      : `Radar Scan (Beamforming · ${(params.geometry ?? "linear").toUpperCase()})`;
+  const panelTitle = `Radar Scan (${(params.geometry ?? "linear").toUpperCase()})`;
 
   const tooltipStyle = {
     backgroundColor: "hsl(240,10%,15%)",
@@ -1850,22 +1996,40 @@ export default function SimulatorRadar() {
       <div className="grid grid-cols-2 grid-rows-2 gap-3 h-full">
         {/* ── Radar Scan Canvas ──────────────────────────────────────────────── */}
         <div className="glass-panel p-3 flex flex-col">
-          <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-            {panelTitle}
-          </h3>
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground">
+              {panelTitle}
+            </h3>
+            <button
+              type="button"
+              onClick={() => {
+                setIsScanning((prev) => {
+                  const next = !prev;
+                  isScanningRef.current = next;
+                  return next;
+                });
+              }}
+              className="text-[9px] font-mono uppercase tracking-wider px-2 py-0.5 rounded border border-white/10 bg-white/5 hover:bg-white/10 transition-colors"
+            >
+              {isScanning ? "⏸ Pause" : "▶ Resume"}
+            </button>
+          </div>
           <div className="flex gap-2 mb-2">
-            {(["mechanical", "beamforming"] as const).map((mode) => (
+            {(["cw", "ccw"] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"
-                onClick={() => setRadarMode(mode)}
+                onClick={() => {
+                  scanDirectionRef.current = mode;
+                  setScanDirection(mode);
+                }}
                 className={`flex-1 h-7 text-[10px] font-mono uppercase tracking-wider rounded-md transition-colors ${
-                  radarMode === mode
+                  scanDirection === mode
                     ? "bg-primary text-primary-foreground"
                     : "bg-white/5 border border-white/15 hover:bg-white/10"
                 }`}
               >
-                {mode === "mechanical" ? "⟳ Mechanical" : "⟿ Beamforming"}
+                {mode === "cw" ? "Clockwise (CW)" : "Counter-Clockwise (CCW)"}
               </button>
             ))}
           </div>
@@ -1877,8 +2041,22 @@ export default function SimulatorRadar() {
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
               onMouseLeave={handleMouseUp}
+              onContextMenu={handleContextMenu}
               className={`radar-canvas rounded-lg max-w-full max-h-full cursor-crosshair ${isInitialLoadRef.current ? "loading" : "ready"}`}
             />
+            {contextMenu && (
+              <div
+                className="fixed z-[100] bg-[#1a1a1a] border border-white/10 rounded-md shadow-xl py-1 overflow-hidden min-w-[100px]"
+                style={{ left: contextMenu.x, top: contextMenu.y }}
+              >
+                <button
+                  onClick={() => deleteTarget(contextMenu.targetId)}
+                  className="w-full px-3 py-1.5 text-[11px] font-mono text-left hover:bg-red-500/20 hover:text-red-400 transition-colors flex items-center gap-2"
+                >
+                  <span className="text-sm">×</span> Delete Target
+                </button>
+              </div>
+            )}
             {isInitialLoadRef.current && (
               <div className="absolute text-center">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2" />
