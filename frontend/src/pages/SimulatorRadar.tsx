@@ -11,6 +11,7 @@ import { useDebounce } from "@/hooks/useDebounce";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import HeatmapView from "@/components/HeatmapView";
 import "./SimulatorRadar.css";
 import {
   ResponsiveContainer,
@@ -270,6 +271,7 @@ export default function SimulatorRadar() {
     "beamforming",
   );
   const radarModeRef = useRef<"mechanical" | "beamforming">("beamforming");
+  const [radarViewMode, setRadarViewMode] = useState<"ppi" | "heatmap">("ppi");
 
   // ── Scan angle ───────────────────────────────────────────────────────────────
   const [scanAngleDeg, setScanAngleDeg] = useState(0);
@@ -432,6 +434,11 @@ export default function SimulatorRadar() {
     key: K,
     value: BeamformingParams[K],
   ) => {
+    if (key === "steeringAngleDeg") {
+      const nextAngle = Number(value);
+      scanAngleRef.current = nextAngle;
+      setScanAngleDeg(nextAngle);
+    }
     setParams((prev) => ({ ...prev, [key]: value }));
   };
 
@@ -1470,6 +1477,117 @@ export default function SimulatorRadar() {
 
   // ─── Utilities ────────────────────────────────────────────────────────────────
 
+  // ─── Radar Heatmap Data ────────────────────────────────────────────────────────
+  const interferenceHeatmapData = useMemo(() => {
+    if (radarViewMode !== "heatmap") {
+      return { grid: [[0]], xRange: [0], yRange: [0], maxVal: 1, extent: 1 };
+    }
+
+    const GRID_N = 120; // Resolution
+    const C = 3e8; // Speed of light
+    
+    const ext = Math.max(1, DETECTION_RANGE_M);
+    const spanX = 2 * ext;
+    const spanY = 2 * ext;
+    const xRange = Array.from({ length: GRID_N }, (_, i) => -ext + (i / (GRID_N - 1)) * spanX);
+    const yRange = Array.from({ length: GRID_N }, (_, i) => -ext + (i / (GRID_N - 1)) * spanY);
+
+    const nElem = Math.max(2, Math.min(128, Math.round(Number(params.numElements ?? 32))));
+    const freqHz = Number(params.frequency ?? 10e9);
+    const wavelength = Math.max(1e-9, C / Math.max(1.0, freqHz));
+    const spacingMeters = Math.max(1e-6, Number(params.spacing ?? 0.5) * wavelength);
+    const amplitude = Math.max(1e-6, Number(params.amplitude ?? 1.0));
+    
+    const wType = (params.apodizationEnabled ? params.windowType : "rectangular") ?? "rectangular";
+    const weights = makeWindowWeights(wType, nElem);
+    const wNorm = Math.max(1e-9, weights.reduce((s, w) => s + Math.abs(w), 0));
+    const kWave = (2 * Math.PI) / wavelength;
+
+    const steeringOffsetDeg = Number(params.steeringAngleDeg ?? 0);
+    const sweepRad = degToRad(scanAngleDeg);
+    const beamDirRad = radarMode === "beamforming" ? degToRad(scanAngleDeg + steeringOffsetDeg) : sweepRad;
+    const geometry = params.geometry ?? "linear";
+    const radiusOverLambda = Math.max(0.5, Number(params.radius ?? 5));
+    const ringRadiusMeters = radiusOverLambda * wavelength;
+
+    const elementEmitters: Array<{ x: number; y: number; amp: number; phase: number; k: number }> = [];
+
+    if (geometry === "curved") {
+      for (let i = 0; i < nElem; i++) {
+        const a = -Math.PI / 2 + (i / nElem) * 2 * Math.PI;
+        const ex = ringRadiusMeters * Math.cos(a);
+        const ey = ringRadiusMeters * Math.sin(a);
+        const steerPhase = kWave * (ex * Math.cos(beamDirRad) + ey * Math.sin(beamDirRad));
+        const phase = -steerPhase;
+        const elemAmp = amplitude * ((weights[i] ?? 1) / wNorm);
+        elementEmitters.push({ x: ex, y: ey, amp: elemAmp, phase, k: kWave });
+      }
+    } else {
+      const centerOffset = (nElem - 1) / 2;
+      for (let i = 0; i < nElem; i++) {
+        const offset = (i - centerOffset) * spacingMeters;
+        const ex = 0;
+        const ey = offset;
+        const phase = -kWave * (ex * Math.cos(beamDirRad) + ey * Math.sin(beamDirRad));
+        const elemAmp = amplitude * ((weights[i] ?? 1) / wNorm);
+        elementEmitters.push({ x: ex, y: ey, amp: elemAmp, phase, k: kWave });
+      }
+    }
+
+    const rawGrid: number[][] = [];
+    const flatVals: number[] = [];
+
+    for (let yi = 0; yi < GRID_N; yi++) {
+      const y = yRange[GRID_N - 1 - yi];
+      const row: number[] = [];
+      for (let xi = 0; xi < GRID_N; xi++) {
+        const x = xRange[xi];
+        let real = 0;
+        let imag = 0;
+        for (const em of elementEmitters) {
+          const dx = x - em.x;
+          const dy = y - em.y;
+          const r = Math.max(1e-6, Math.hypot(dx, dy));
+          const phase = (em.k * r) + em.phase;
+          const a = em.amp / Math.sqrt(r);
+          real += a * Math.cos(phase);
+          imag += a * Math.sin(phase);
+        }
+        const intensity = real * real + imag * imag;
+        row.push(intensity);
+        flatVals.push(intensity);
+      }
+      rawGrid.push(row);
+    }
+
+    flatVals.sort((a, b) => a - b);
+    const p = 0.99;
+    const idx = Math.min(flatVals.length - 1, Math.max(0, Math.floor(p * (flatVals.length - 1))));
+    const maxVal = Math.max(1e-12, flatVals[idx] ?? 1e-12);
+
+    return {
+      grid: rawGrid,
+      xRange,
+      yRange,
+      maxVal: Math.max(1e-9, maxVal),
+      extent: Math.max(spanX, spanY),
+    };
+  }, [
+    params.numElements,
+    params.spacing,
+    params.wavelength,
+    params.windowType,
+    params.apodizationEnabled,
+    params.steeringAngleDeg,
+    params.amplitude,
+    params.frequency,
+    params.geometry,
+    params.radius,
+    scanAngleDeg,
+    radarMode,
+    radarViewMode
+  ]);
+
   const clearChartData = useCallback(() => {
     detectionHistoryRef.current = [];
     setDetectionHistory([]);
@@ -1683,7 +1801,10 @@ export default function SimulatorRadar() {
     return (
       <MainLayout
         controlPanel={
-          <ControlPanel params={params} onParamChange={updateParam} />
+          <ControlPanel
+            params={{ ...params, steeringAngleDeg: Math.round(scanAngleDeg) }}
+            onParamChange={updateParam}
+          />
         }
       >
         <Alert variant="destructive" className="m-4">
@@ -1720,7 +1841,7 @@ export default function SimulatorRadar() {
     <MainLayout
       controlPanel={
         <ControlPanel
-          params={params}
+          params={{ ...params, steeringAngleDeg: Math.round(scanAngleDeg) }}
           onParamChange={updateParam}
           extra={extraControls}
         />
@@ -1769,16 +1890,29 @@ export default function SimulatorRadar() {
 
         {/* ── PPI Radar Screen ───────────────────────────────────────────────── */}
         <div className="glass-panel p-3 flex flex-col">
-          <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-            PPI Radar Screen (Plan Position Indicator)
-          </h3>
-          <div className="flex-1 min-h-0 flex items-center justify-center">
-            <canvas
-              ref={ppiCanvasRef}
-              className="radar-canvas rounded-lg max-w-full max-h-full"
-            />
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground">
+              {radarViewMode === "heatmap" ? "Interference Heatmap" : "PPI Radar Screen"}
+            </h3>
+            <button
+              type="button"
+              onClick={() => setRadarViewMode(prev => prev === "ppi" ? "heatmap" : "ppi")}
+              className="text-[9px] font-mono uppercase tracking-wider px-2 py-0.5 rounded border border-white/10 bg-white/5 hover:bg-white/10 transition-colors"
+            >
+              Show {radarViewMode === "heatmap" ? "PPI Screen" : "Heatmap"}
+            </button>
           </div>
-          {detectionHistory.length === 0 && (
+          <div className="flex-1 min-h-0 flex items-center justify-center relative">
+            {radarViewMode === "ppi" ? (
+              <canvas
+                ref={ppiCanvasRef}
+                className="radar-canvas rounded-lg max-w-full max-h-full"
+              />
+            ) : (
+              <HeatmapView data={interferenceHeatmapData} />
+            )}
+          </div>
+          {radarViewMode === "ppi" && detectionHistory.length === 0 && (
             <p className="text-[10px] font-mono text-muted-foreground/60 text-center mt-1">
               Place targets on the scan display — detections appear here as
               glowing dots
