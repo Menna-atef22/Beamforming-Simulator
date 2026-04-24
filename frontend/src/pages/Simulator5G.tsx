@@ -1102,17 +1102,7 @@ export default function Simulator5G() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localTowers]);
 
-
-
-  if (error && isInitialLoadRef.current) {
-    return (
-      <MainLayout controlPanel={<ControlPanel params={params} onParamChange={updateParam} />}>
-        <Alert variant="destructive" className="m-4">
-          <AlertDescription>Backend Error: {error}</AlertDescription>
-        </Alert>
-      </MainLayout>
-    );
-  }
+  const initialBackendError = error && isInitialLoadRef.current ? error : null;
 
   const userSignalData = useMemo(() =>
     {
@@ -1461,6 +1451,11 @@ export default function Simulator5G() {
 
   return (
     <MainLayout controlPanel={panelControl}>
+      {initialBackendError && (
+        <Alert variant="destructive" className="mb-3">
+          <AlertDescription>Backend Error: {initialBackendError}</AlertDescription>
+        </Alert>
+      )}
       <div className="grid grid-cols-2 grid-rows-2 gap-3 h-full">
 
         {/* ── 2D Map ───────────────────────────────────────────────────── */}

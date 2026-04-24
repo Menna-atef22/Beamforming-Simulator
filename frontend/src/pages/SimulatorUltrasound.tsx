@@ -249,17 +249,23 @@ const DopplerCanvas = memo(function DopplerCanvas({ points }: { points: DopplerP
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    canvas.width = 560;
-    canvas.height = 220;
+    const cssWidth = Math.max(560, Math.floor(canvas.clientWidth || 560));
+    const cssHeight = Math.max(220, Math.floor(canvas.clientHeight || 220));
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+
+    canvas.width = Math.floor(cssWidth * dpr);
+    canvas.height = Math.floor(cssHeight * dpr);
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const left = 34;
-    const right = 548;
+    const right = cssWidth - 12;
     const top = 12;
-    const bottom = 196;
+    const bottom = cssHeight - 24;
     const mid = Math.round((top + bottom) / 2);
 
     ctx.fillStyle = PANEL_BG_ALT;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, cssWidth, cssHeight);
 
     ctx.strokeStyle = GRID_COLOR;
     for (let i = 0; i <= 8; i += 1) {
@@ -295,9 +301,9 @@ const DopplerCanvas = memo(function DopplerCanvas({ points }: { points: DopplerP
 
     ctx.fillStyle = TEXT_COLOR;
     ctx.font = "11px JetBrains Mono";
-    ctx.fillText("Time (s)", 258, 214);
+    ctx.fillText("Time (s)", Math.max(left + 120, Math.round(cssWidth * 0.45)), cssHeight - 6);
     ctx.save();
-    ctx.translate(12, 110);
+    ctx.translate(12, Math.round(cssHeight / 2));
     ctx.rotate(-Math.PI / 2);
     ctx.fillText("fd (Hz)", -20, 0);
     ctx.restore();
@@ -314,7 +320,12 @@ function ControlDashboard({
   probePathMode,
   onProbePathMode,
   autoScan,
-  onAutoScan,
+  autoScanPaused,
+  autoScanSpeed,
+  onAutoScanSpeed,
+  onStartAutoScan,
+  onPauseResumeAutoScan,
+  onStopAutoScan,
   onResetBmode,
 }: {
   params: UltrasoundUIParams;
@@ -324,9 +335,16 @@ function ControlDashboard({
   probePathMode: ProbePathMode;
   onProbePathMode: (mode: ProbePathMode) => void;
   autoScan: boolean;
-  onAutoScan: () => void;
+  autoScanPaused: boolean;
+  autoScanSpeed: number;
+  onAutoScanSpeed: (value: number) => void;
+  onStartAutoScan: () => void;
+  onPauseResumeAutoScan: () => void;
+  onStopAutoScan: () => void;
   onResetBmode: () => void;
 }) {
+  const autoScanStatus = !autoScan ? "Stopped" : autoScanPaused ? "Paused" : "Running";
+
   return (
     <div className="ultra-control-panel">
       <h2 className="ultra-panel-title">Control Dashboard</h2>
@@ -381,9 +399,26 @@ function ControlDashboard({
         </SelectContent>
       </Select>
 
+      <div className="ultra-section-divider" />
+
+      <h3 className="ultra-subsection-title">Auto Scan</h3>
+
+      <div className="ultra-control-row"><Label>Status</Label><span>{autoScanStatus}</span></div>
+
+      <div className="ultra-control-row"><Label>Scan Speed</Label><span>{autoScanSpeed.toFixed(2)}x</span></div>
+      <Slider value={[autoScanSpeed]} min={0.25} max={4} step={0.05} onValueChange={([v]) => onAutoScanSpeed(v)} />
+
       <div className="ultra-actions-row">
-        <button type="button" className={`ultra-auto-btn ${autoScan ? "active" : ""}`} onClick={onAutoScan}>
-          {autoScan ? "Stop Auto Scan" : "Auto Scan"}
+        <button type="button" className={`ultra-auto-btn ${autoScan && !autoScanPaused ? "active" : ""}`} onClick={onStartAutoScan}>
+          {autoScan ? "Restart Auto Scan" : "Start Auto Scan"}
+        </button>
+
+        <button type="button" className="ultra-auto-btn" onClick={onPauseResumeAutoScan} disabled={!autoScan}>
+          {autoScanPaused ? "Resume" : "Pause"}
+        </button>
+
+        <button type="button" className="ultra-auto-btn" onClick={onStopAutoScan} disabled={!autoScan}>
+          Stop
         </button>
 
         <button type="button" className="ultra-auto-btn" onClick={onResetBmode}>
@@ -403,6 +438,8 @@ export default function SimulatorUltrasound() {
   const [editIndex, setEditIndex] = useState<number | null>(null);
   const [editDraft, setEditDraft] = useState<PhantomEllipse | null>(null);
   const [autoScan, setAutoScan] = useState(false);
+  const [autoScanPaused, setAutoScanPaused] = useState(false);
+  const [autoScanSpeed, setAutoScanSpeed] = useState(1);
   const [autoProgress, setAutoProgress] = useState(0);
   const [bmodeViewOffset, setBmodeViewOffset] = useState(0);
 
@@ -947,17 +984,19 @@ export default function SimulatorUltrasound() {
   }, [autoScan, bmodeColumns]);
 
   useEffect(() => {
-    if (!autoScan) return;
+    if (!autoScan || autoScanPaused) return;
     let raf = 0;
     let current = probeParam;
 
     const tick = () => {
-      current += AUTO_SCAN_STEP;
+      current += AUTO_SCAN_STEP * autoScanSpeed;
       setProbeParam(current);
       const progress = clamp(current, 0, 1);
       setAutoProgress(progress);
       if (current >= 1) {
+        setProbeParam(1);
         setAutoScan(false);
+        setAutoScanPaused(false);
         setAutoProgress(1);
         return;
       }
@@ -966,7 +1005,7 @@ export default function SimulatorUltrasound() {
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [autoScan, probeParam]);
+  }, [autoScan, autoScanPaused, autoScanSpeed, probeParam]);
 
   useEffect(() => {
     const canvas = beamFieldRef.current;
@@ -1078,17 +1117,26 @@ export default function SimulatorUltrasound() {
           probePathMode={probePathMode}
           onProbePathMode={(mode) => {
             setProbePathMode(mode);
+            setAutoScan(false);
+            setAutoScanPaused(false);
             setProbeParam(0);
             setAutoProgress(0);
           }}
           autoScan={autoScan}
-          onAutoScan={() => {
+          autoScanPaused={autoScanPaused}
+          autoScanSpeed={autoScanSpeed}
+          onAutoScanSpeed={setAutoScanSpeed}
+          onStartAutoScan={() => {
             setProbeParam(0);
             setAutoProgress(0);
-            setAutoScan((v) => {
-              if (!v) resetBmode();
-              return !v;
-            });
+            resetBmode();
+            setAutoScan(true);
+            setAutoScanPaused(false);
+          }}
+          onPauseResumeAutoScan={() => setAutoScanPaused((v) => !v)}
+          onStopAutoScan={() => {
+            setAutoScan(false);
+            setAutoScanPaused(false);
           }}
           onResetBmode={resetBmode}
         />
@@ -1096,10 +1144,12 @@ export default function SimulatorUltrasound() {
     >
       <div className="ultra-layout-grid">
         <section className="glass-panel ultra-panel phantom-panel">
-          <header className="ultra-panel-header">Phantom View</header>
+          <header className="ultra-panel-header phantom-header">
+            <span>Phantom View</span>
+            <span className="ultra-hint-inline">Drag probe on perimeter, drag vessel inside phantom, hover tissue, click tissue to edit.</span>
+          </header>
           <div className="ultra-panel-body phantom-body">
             <canvas ref={phantomRef} className="ultra-phantom-canvas" />
-            <p className="ultra-hint">Drag probe on perimeter, drag vessel inside phantom, hover tissue, click tissue to edit.</p>
             {hoverRegion && (
               <div className="ultra-tooltip">
                 <div className="ultra-tooltip-title">{hoverRegion.label}</div>
@@ -1112,14 +1162,17 @@ export default function SimulatorUltrasound() {
           </div>
         </section>
 
-        <section className="glass-panel ultra-panel right-stack-panel">
+        <section className="glass-panel ultra-panel amode-panel">
           <header className="ultra-panel-header">A-Mode (Amplitude vs Depth)</header>
           <div className="ultra-panel-body"><AModeCanvas data={amode} /></div>
+        </section>
+
+        <section className="glass-panel ultra-panel beam-panel">
           <header className="ultra-panel-header">Beam Field</header>
           <div className="ultra-panel-body beam-body"><canvas ref={beamFieldRef} className="ultra-beam-canvas" /></div>
         </section>
 
-        <section className="glass-panel ultra-panel bottom-panel">
+        <section className="glass-panel ultra-panel bottom-panel bmode-panel">
           <header className="ultra-panel-header">B-Mode Image</header>
           <progress className="ultra-progress" max={100} value={Math.round(autoProgress * 100)} />
           <div className="ultra-doppler-readout">
@@ -1140,7 +1193,7 @@ export default function SimulatorUltrasound() {
           <div className="ultra-bmode-wrap"><canvas ref={bmodeRef} className="ultra-bmode-canvas" /></div>
         </section>
 
-        <section className="glass-panel ultra-panel bottom-panel">
+        <section className="glass-panel ultra-panel bottom-panel doppler-panel">
           <header className="ultra-panel-header">Doppler Mode</header>
           <div className="ultra-doppler-readout">
             <span>{vesselIntersects ? "Beam intersects vessel" : "Beam misses vessel"}</span>
