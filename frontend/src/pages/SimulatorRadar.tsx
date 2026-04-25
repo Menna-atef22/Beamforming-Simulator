@@ -226,7 +226,7 @@ const defaultParams: BeamformingParams & Record<string, any> = {
 
 type PlacedTarget = {
   id: string;
-  angleDeg: number;
+  compassAngle: number;  // 0-360°, compass style (0=top/north, CW)
   distanceM: number;
   sizeM: number;
   lastHitMs: number;
@@ -368,10 +368,12 @@ export default function SimulatorRadar() {
   useEffect(() => {
     const wavelength = Math.max(0.01, Number(params.wavelength ?? 1.0));
     const spacingOverLambda = Number(params.spacing ?? 0.5) / wavelength;
+    // Phase shift uses compass→elevation: sin((90 - beamAngle) * π/180)
+    // steeringAngleDeg is compass, so elevation = 90 - steeringAngleDeg
     const steeringOffsetDeg = Number(params.steeringAngleDeg ?? 0);
     const radiusOverLambda = Math.max(0.5, Number(params.radius ?? 5));
     const phaseOffsetRad =
-      2 * Math.PI * spacingOverLambda * Math.sin(degToRad(steeringOffsetDeg));
+      2 * Math.PI * spacingOverLambda * Math.sin((90 - steeringOffsetDeg) * Math.PI / 180);
 
     detParamsRef.current = {
       numElements: Math.max(
@@ -432,7 +434,8 @@ export default function SimulatorRadar() {
     value: BeamformingParams[K],
   ) => {
     if (key === "steeringAngleDeg") {
-      const nextAngle = Number(value);
+      // steeringAngleDeg slider value equals beamAngle (compass) directly
+      const nextAngle = clampAngleDeg360(Number(value));
       scanAngleRef.current = nextAngle;
       setScanAngleDeg(nextAngle);
     }
@@ -464,7 +467,8 @@ export default function SimulatorRadar() {
     const beamWidthDeg = Math.max(1, dp.beamWidthDeg);
     const halfBeam = beamWidthDeg / 2;
 
-    const effectiveSweepDeg = clampAngleDeg360(sweepDeg + dp.steeringOffsetDeg);
+    // beamAngle is compass convention master variable
+    const effectiveSweepDeg = clampAngleDeg360(sweepDeg);  // already compass, no offset
 
     // ── SNR model ─────────────────────────────────────────────────────────────
     // noise_std = signal_amplitude / 10^(SNR_dB/20)
@@ -513,8 +517,9 @@ export default function SimulatorRadar() {
     // where target_angular_size = atan2(target_radius, target_distance) in degrees
     let slotSignal = 0;
     for (const t of targets) {
-      const targetAngleDeg = clampAngleDeg360(t.angleDeg);
-      const deltaDeg = Math.abs(wrapDiff(effectiveSweepDeg, targetAngleDeg));
+      const targetAngleDeg = clampAngleDeg360(t.compassAngle);
+      const diff = Math.abs(effectiveSweepDeg - targetAngleDeg);
+      const deltaDeg = diff > 180 ? 360 - diff : diff;
       const targetRadiusM = t.sizeM / 2;
       const targetAngularSizeDeg =
         (Math.atan2(targetRadiusM, Math.max(0.1, t.distanceM)) * 180) / Math.PI;
@@ -584,8 +589,9 @@ export default function SimulatorRadar() {
 
     for (let ti = 0; ti < targets.length; ti++) {
       const t = targets[ti];
-      const targetAngleDeg = clampAngleDeg360(t.angleDeg);
-      const deltaDeg = Math.abs(wrapDiff(effectiveSweepDeg, targetAngleDeg));
+      const targetAngleDeg = clampAngleDeg360(t.compassAngle);
+      const diff = Math.abs(effectiveSweepDeg - targetAngleDeg);
+      const deltaDeg = diff > 180 ? 360 - diff : diff;
       // Target angular size contributes to detection window (spec requirement)
       const targetRadiusM = t.sizeM / 2;
       const targetAngularSizeDeg =
@@ -646,7 +652,7 @@ export default function SimulatorRadar() {
 
       // Leading-edge recording: record when beam first enters AND detection succeeds
       if (!wasInside && detected) {
-        // Write a strong, narrow spike at the target angle when beam first hits.
+        // Spike is recorded at target.compassAngle on chart
         const targetSlot =
           Math.round((((targetAngleDeg % 360) + 360) % 360) * 2) % ANGLE_SLOTS;
         const spikeAbs = Math.max(
@@ -835,10 +841,11 @@ export default function SimulatorRadar() {
       if (age > PPI_FADE_MS) continue;
       const alpha = Math.max(0, 1 - age / PPI_FADE_MS);
 
-      const angleRad = degToRad(d.angleDeg);
+      // Detection angle stored in compass convention; convert for PPI canvas drawing
+      const canvasAngleRad = (d.angleDeg - 90) * Math.PI / 180;
       const rPx = (d.distanceM / DETECTION_RANGE_M) * R;
-      const x = cx + Math.cos(angleRad) * rPx;
-      const y = cy + Math.sin(angleRad) * rPx;
+      const x = cx + Math.cos(canvasAngleRad) * rPx;
+      const y = cy + Math.sin(canvasAngleRad) * rPx;
 
       // Use the target's assigned color with fading alpha
       const baseColor = TARGET_COLORS[d.colorIdx % TARGET_COLORS.length];
@@ -863,13 +870,13 @@ export default function SimulatorRadar() {
       ctx.fill();
     }
 
-    // Sweep line (ghosted green ray showing current beam position)
-    const sweepRad = degToRad(scanAngleDeg);
+    // Sweep line: convert compass beamAngle to canvas angle for PPI
+    const sweepCanvasRad = (scanAngleDeg - 90) * Math.PI / 180;
     const sweepGrad = ctx.createLinearGradient(
       cx,
       cy,
-      cx + Math.cos(sweepRad) * R,
-      cy + Math.sin(sweepRad) * R,
+      cx + Math.cos(sweepCanvasRad) * R,
+      cy + Math.sin(sweepCanvasRad) * R,
     );
     sweepGrad.addColorStop(0, "rgba(0,255,80,0.12)");
     sweepGrad.addColorStop(1, "rgba(0,255,80,0)");
@@ -877,7 +884,7 @@ export default function SimulatorRadar() {
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(cx, cy);
-    ctx.lineTo(cx + Math.cos(sweepRad) * R, cy + Math.sin(sweepRad) * R);
+    ctx.lineTo(cx + Math.cos(sweepCanvasRad) * R, cy + Math.sin(sweepCanvasRad) * R);
     ctx.stroke();
 
     ctx.restore(); // end clip
@@ -984,10 +991,11 @@ export default function SimulatorRadar() {
     const nowMs = performance.now();
     for (let ti = 0; ti < placedTargets.length; ti++) {
       const t = placedTargets[ti];
-      const a = degToRad(t.angleDeg);
+      // compassAngle stored in target → convert to canvas angle for drawing
+      const canvasAngleRad = (t.compassAngle - 90) * Math.PI / 180;
       const r = (t.distanceM / DETECTION_RANGE_M) * radius;
-      const x = cx + Math.cos(a) * r;
-      const y = cy + Math.sin(a) * r;
+      const x = cx + Math.cos(canvasAngleRad) * r;
+      const y = cy + Math.sin(canvasAngleRad) * r;
       const pr = Math.max(4, (t.sizeM / DETECTION_RANGE_M) * radius);
       const isSelected = selectedTargetId === t.id;
       const tColor = TARGET_COLORS[ti % TARGET_COLORS.length];
@@ -1049,9 +1057,11 @@ export default function SimulatorRadar() {
       ctx.textBaseline = "alphabetic";
     }
 
-    const sweepRad = degToRad(scanAngleDeg);
-    const steeringOffsetDeg = Number(params.steeringAngleDeg ?? 0);
-    const beamDirRad = degToRad(scanAngleDeg + steeringOffsetDeg);
+    // beamAngle is compass (0=top/north, CW). Convert to canvas math angle for drawing.
+    const beamAngle = scanAngleDeg; // compass convention master variable
+    const canvasBeamRad = (beamAngle - 90) * Math.PI / 180;
+    const sweepRad = canvasBeamRad; // alias used by wavefront/element rendering below
+    const beamDirRad = canvasBeamRad;
 
     // Build centered element emitters from sidebar geometry/spacing parameters.
     const nElem = Math.max(
@@ -1242,13 +1252,12 @@ export default function SimulatorRadar() {
     // HUD
     const wHUD = Math.max(0.01, Number(params.wavelength ?? 1.0));
     const dHUD = Number(params.spacing ?? 0.5) / wHUD;
-    const stHUD = Number(params.steeringAngleDeg ?? 0);
-    const effHUD = scanAngleDeg + stHUD;
-    const rawDPhi = 2 * Math.PI * dHUD * Math.sin(degToRad(effHUD));
+    // Phase shift uses compass→elevation: sin((90 - beamAngle) * π/180)
+    const rawDPhi = 2 * Math.PI * dHUD * Math.sin((90 - beamAngle) * Math.PI / 180);
     const dPhi = ((rawDPhi + Math.PI) % (2 * Math.PI)) - Math.PI;
     ctx.fillStyle = "hsla(240,8%,78%,0.75)";
     ctx.font = "10px JetBrains Mono";
-    ctx.fillText(`θ: ${effHUD.toFixed(1)}°`, 14, 22);
+    ctx.fillText(`θ: ${beamAngle.toFixed(1)}°`, 14, 22);
     ctx.fillText(`Δφ: ${dPhi.toFixed(2)} rad`, 14, 38);
     ctx.fillText(
       `${scanSpeed.toFixed(1)}°/s  ${(params.geometry ?? "linear").toUpperCase()}`,
@@ -1287,10 +1296,10 @@ export default function SimulatorRadar() {
       const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
       const my = (e.clientY - rect.top) * (canvas.height / rect.height);
       for (const t of placedTargetsRef.current) {
-        const ta = degToRad(t.angleDeg);
+        const tCanvasRad = (t.compassAngle - 90) * Math.PI / 180;
         const tr = (t.distanceM / DETECTION_RANGE_M) * radiusPx;
-        const tx = cx + Math.cos(ta) * tr;
-        const ty = cy + Math.sin(ta) * tr;
+        const tx = cx + Math.cos(tCanvasRad) * tr;
+        const ty = cy + Math.sin(tCanvasRad) * tr;
         const pr = Math.max(4, (t.sizeM / DETECTION_RANGE_M) * radiusPx);
         if (Math.hypot(mx - tx, my - ty) <= pr + 12) {
           const delta = e.deltaY * -0.0012;
@@ -1322,10 +1331,10 @@ export default function SimulatorRadar() {
       const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
       const my = (e.clientY - rect.top) * (canvas.height / rect.height);
       for (const t of placedTargetsRef.current) {
-        const ta = degToRad(t.angleDeg);
+        const tCanvasRad = (t.compassAngle - 90) * Math.PI / 180;
         const tr = (t.distanceM / DETECTION_RANGE_M) * radiusPx;
-        const tx = cx + Math.cos(ta) * tr;
-        const ty = cy + Math.sin(ta) * tr;
+        const tx = cx + Math.cos(tCanvasRad) * tr;
+        const ty = cy + Math.sin(tCanvasRad) * tr;
         const pr = Math.max(4, (t.sizeM / DETECTION_RANGE_M) * radiusPx);
         if (Math.hypot(mx - tx, my - ty) <= pr + 8) {
           dragRef.current = { id: t.id, active: true, moved: false };
@@ -1352,7 +1361,8 @@ export default function SimulatorRadar() {
       const dy = my - cy;
       const rPx = Math.hypot(dx, dy);
       if (rPx > radiusPx) return;
-      const newAngle = clampAngleDeg360((Math.atan2(dy, dx) * 180) / Math.PI);
+      // Compass angle: negate dy because canvas Y is flipped
+      const newAngle = (90 - Math.atan2(-dy, dx) * 180 / Math.PI + 360) % 360;
       const newDist = Math.min(
         DETECTION_RANGE_M * 0.98,
         (rPx / radiusPx) * DETECTION_RANGE_M,
@@ -1360,7 +1370,7 @@ export default function SimulatorRadar() {
       dragRef.current.moved = true;
       const dragId = dragRef.current.id;
       placedTargetsRef.current = placedTargetsRef.current.map((p) =>
-        p.id === dragId ? { ...p, angleDeg: newAngle, distanceM: newDist } : p,
+        p.id === dragId ? { ...p, compassAngle: newAngle, distanceM: newDist } : p,
       );
       setPlacedTargets(placedTargetsRef.current);
     },
@@ -1394,14 +1404,15 @@ export default function SimulatorRadar() {
       const dy = my - cy;
       const rPx = Math.hypot(dx, dy);
       if (rPx > radiusPx) return;
-      const clickAngle = clampAngleDeg360((Math.atan2(dy, dx) * 180) / Math.PI);
+      // Compass angle from canvas pixel: negate dy because canvas Y is flipped
+      const clickAngle = (90 - Math.atan2(-dy, dx) * 180 / Math.PI + 360) % 360;
       const clickDist = (rPx / radiusPx) * DETECTION_RANGE_M;
       const targets = placedTargetsRef.current;
       for (const t of targets) {
-        const ta = degToRad(t.angleDeg);
+        const tCanvasRad = (t.compassAngle - 90) * Math.PI / 180;
         const tr = (t.distanceM / DETECTION_RANGE_M) * radiusPx;
-        const tx = cx + Math.cos(ta) * tr;
-        const ty = cy + Math.sin(ta) * tr;
+        const tx = cx + Math.cos(tCanvasRad) * tr;
+        const ty = cy + Math.sin(tCanvasRad) * tr;
         const pr = Math.max(4, (t.sizeM / DETECTION_RANGE_M) * radiusPx);
         if (Math.hypot(mx - tx, my - ty) <= pr + 8) {
           setSelectedTargetId(t.id);
@@ -1412,7 +1423,7 @@ export default function SimulatorRadar() {
       const id = `U-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
       const newTarget: PlacedTarget = {
         id,
-        angleDeg: clickAngle,
+        compassAngle: clickAngle,
         distanceM: clickDist,
         sizeM: 0.6,
         lastHitMs: 0,
@@ -1436,10 +1447,10 @@ export default function SimulatorRadar() {
     const my = (e.clientY - rect.top) * (canvas.height / rect.height);
 
     for (const t of placedTargetsRef.current) {
-      const ta = degToRad(t.angleDeg);
+      const tCanvasRad = (t.compassAngle - 90) * Math.PI / 180;
       const tr = (t.distanceM / DETECTION_RANGE_M) * radiusPx;
-      const tx = cx + Math.cos(ta) * tr;
-      const ty = cy + Math.sin(ta) * tr;
+      const tx = cx + Math.cos(tCanvasRad) * tr;
+      const ty = cy + Math.sin(tCanvasRad) * tr;
       const pr = Math.max(4, (t.sizeM / DETECTION_RANGE_M) * radiusPx);
       if (Math.hypot(mx - tx, my - ty) <= pr + 10) {
         setContextMenu({ x: e.clientX, y: e.clientY, targetId: t.id });
@@ -1765,7 +1776,7 @@ export default function SimulatorRadar() {
                   setScanSpeed(180.0);
                   const base = performance.now();
                   const preset: PlacedTarget[] = [
-                    { id: `Q1-${base}`, angleDeg: 45, distanceM: 6.0, sizeM: 0.5, lastHitMs: 0 },
+                    { id: `Q1-${base}`, compassAngle: 45, distanceM: 6.0, sizeM: 0.5, lastHitMs: 0 },
                   ];
                   placedTargetsRef.current = preset;
                   setPlacedTargets(preset);
@@ -1775,7 +1786,7 @@ export default function SimulatorRadar() {
                   setScanSpeed(35.0);
                   const base = performance.now();
                   const preset: PlacedTarget[] = [
-                    { id: `P1-${base}`, angleDeg: 120, distanceM: 8.5, sizeM: 0.2, lastHitMs: 0 },
+                    { id: `P1-${base}`, compassAngle: 120, distanceM: 8.5, sizeM: 0.2, lastHitMs: 0 },
                   ];
                   placedTargetsRef.current = preset;
                   setPlacedTargets(preset);
@@ -1787,35 +1798,35 @@ export default function SimulatorRadar() {
                   const preset: PlacedTarget[] = [
                     {
                       id: `P1-${base}`,
-                      angleDeg: 20,
+                      compassAngle: 20,
                       distanceM: 2.2,
                       sizeM: 0.45,
                       lastHitMs: 0,
                     },
                     {
                       id: `P2-${base}`,
-                      angleDeg: 75,
+                      compassAngle: 75,
                       distanceM: 5.5,
                       sizeM: 0.7,
                       lastHitMs: 0,
                     },
                     {
                       id: `P3-${base}`,
-                      angleDeg: 140,
+                      compassAngle: 140,
                       distanceM: 7.8,
                       sizeM: 0.55,
                       lastHitMs: 0,
                     },
                     {
                       id: `P4-${base}`,
-                      angleDeg: 230,
+                      compassAngle: 230,
                       distanceM: 3.8,
                       sizeM: 0.85,
                       lastHitMs: 0,
                     },
                     {
                       id: `P5-${base}`,
-                      angleDeg: 310,
+                      compassAngle: 310,
                       distanceM: 9.2,
                       sizeM: 0.6,
                       lastHitMs: 0,
@@ -2242,7 +2253,7 @@ export default function SimulatorRadar() {
                     <ReferenceLine
                       key={t.id}
                       x={parseFloat(
-                        (Math.round(t.angleDeg * 2) / 2).toFixed(1),
+                        (Math.round(t.compassAngle * 2) / 2).toFixed(1),
                       )}
                       stroke={TARGET_COLORS[ti % TARGET_COLORS.length]}
                       strokeOpacity={0.55}
