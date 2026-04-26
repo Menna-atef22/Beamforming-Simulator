@@ -18,8 +18,8 @@ export default function Home() {
     spacing: 0.5,
     geometry: "linear",
     radius: 5,
+    // `frequency` is stored in the UI as GHz; backend receives Hz via hook conversion
     frequency: 1.0,
-    wavelength: 1.0,
     profileDepth: 2.0,
     steeringAngleDeg: 0,
     amplitude: 1.0,
@@ -49,7 +49,7 @@ export default function Home() {
           spacing: debouncedParams.spacing,
           geometry: debouncedParams.geometry,
           radius: debouncedParams.radius,
-          wavelength: debouncedParams.wavelength,
+          frequency: debouncedParams.frequency,
           profile_depth: debouncedParams.profileDepth,
           steering_angle_deg: debouncedParams.steeringAngleDeg,
           amplitude: debouncedParams.amplitude,
