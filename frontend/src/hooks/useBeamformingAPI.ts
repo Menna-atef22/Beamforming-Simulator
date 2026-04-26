@@ -34,6 +34,7 @@ export function useBeamformingAPI() {
           window_type: params.window_type ?? params.windowType ?? "rectangular",
           noise_enabled: params.noise_enabled !== undefined ? params.noise_enabled : (params.noiseEnabled ?? true),
           apodization_enabled: params.apodization_enabled !== undefined ? params.apodization_enabled : (params.apodizationEnabled ?? false),
+          profile_depth: params.profile_depth ?? params.profileDepth ?? undefined,
         };
 
         const response = await apiFetch("/api/simulate/beamforming", {

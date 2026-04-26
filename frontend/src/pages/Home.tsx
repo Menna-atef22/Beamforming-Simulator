@@ -20,6 +20,7 @@ export default function Home() {
     radius: 5,
     frequency: 1.0,
     wavelength: 1.0,
+    profileDepth: 2.0,
     steeringAngleDeg: 0,
     amplitude: 1.0,
     snrDb: 30,
@@ -49,6 +50,7 @@ export default function Home() {
           geometry: debouncedParams.geometry,
           radius: debouncedParams.radius,
           wavelength: debouncedParams.wavelength,
+          profile_depth: debouncedParams.profileDepth,
           steering_angle_deg: debouncedParams.steeringAngleDeg,
           amplitude: debouncedParams.amplitude,
           snr_db: debouncedParams.snrDb,
@@ -138,10 +140,15 @@ export default function Home() {
         
         {result ? (
           <>
-            <HeatmapView data={result.interferenceMap} title="Interference Heatmap" />
+            <HeatmapView
+              data={result.interferenceMap}
+              title="Interference Heatmap"
+              array={result.array}
+              profileDepth={params.profileDepth}
+            />
             <BeamPlot beamPattern={result.beamPattern} title="Beam Pattern (Main Lobe + Side Lobes)" />
             <ComparisonView before={result.beamPatternNoSteer} after={result.beamPattern} title="Before vs After (Steering + Apodization)" />
-            <SignalProfileView data={result.signalProfile} title="Signal Profile (Line Cut at y=2)" />
+            <SignalProfileView data={result.signalProfile} title={`Signal Profile (Line Cut at y=${params.profileDepth ?? 2} m)`} />
           </>
         ) : (
           <>

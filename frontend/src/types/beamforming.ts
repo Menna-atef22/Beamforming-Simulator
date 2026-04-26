@@ -19,6 +19,8 @@ export interface BeamformingParams {
   amplitude: number;
   snrDb: number;
   windowType: WindowType;
+  /** Depth (meters) at which to extract the 1D signal profile (line cut) */
+  profileDepth?: number;
   enableNoise?: boolean;
   noiseEnabled?: boolean;
   apodizationEnabled?: boolean;

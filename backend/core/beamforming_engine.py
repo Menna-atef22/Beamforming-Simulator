@@ -437,11 +437,15 @@ class BeamformingEngine:
         aperture = self.array.num_elements * self.array.get_element_spacing_meters()
 
         # Determine dynamic extent so the array fits and some propagation distance
-        # is visible. Use a multiple of aperture for depth/width and cap to a
-        # reasonable maximum (100 * wavelength) to avoid extreme zoom-out.
-        dynamic_extent = max(self.DEFAULT_EXTENT, 4.0 * aperture)
+        # is visible. Use an aperture-based extent with a fixed padding rather
+        # than a strict linear multiple so that element spacing produces
+        # visually noticeable changes in the overlay markers (avoids
+        # self-similar scaling which keeps markers at the same normalized
+        # position). Cap to a reasonable maximum (100 * wavelength).
         max_extent = 100.0 * self.array.wavelength
-        dynamic_extent = min(dynamic_extent, max_extent)
+        padding = 5.0 * self.array.wavelength
+        dynamic_extent = aperture + padding
+        dynamic_extent = max(self.DEFAULT_EXTENT, min(dynamic_extent, max_extent))
 
         # Generate 2D interference map using the computed extent
         interference_map = self.interference_map_engine.compute_2d_map(

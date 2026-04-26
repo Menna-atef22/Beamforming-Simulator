@@ -22,6 +22,7 @@ class BeamformingParamsSchema(BaseModel):
     window_type: WindowType = Field(default="rectangular", description="Apodization window type")
     noise_enabled: bool = Field(default=False, description="Enable noise simulation")
     apodization_enabled: bool = Field(default=False, description="Enable window function")
+    profile_depth: Optional[float] = Field(default=None, gt=0, description="Profile depth in meters (line cut)")
 
     class Config:
         json_schema_extra = {
