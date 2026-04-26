@@ -11,6 +11,7 @@ export interface TowerParams {
   spacing?: number;
   wavelength?: number;
   steering_angle_deg?: number;
+  manual_steering_deg?: number; // user-set manual override (−90 to +90)
   amplitude?: number;
   snr_db?: number;
   window_type?: "rectangular" | "hamming" | "hanning" | "blackman" | "kaiser";
@@ -28,6 +29,7 @@ interface TowerConfigPopupProps {
   anchorPx: { x: number; y: number };
   onClose: () => void;
   onChange: (updated: TowerParams) => void;
+  isAutoSteering?: boolean;
 }
 
 // ─── Slider row ───────────────────────────────────────────────────────────────
@@ -89,6 +91,7 @@ export default function TowerConfigPopup({
   anchorPx,
   onClose,
   onChange,
+  isAutoSteering = false,
 }: TowerConfigPopupProps) {
   // Keep popup inside viewport — flip to left if too close to right edge
   const popupW = 220;
@@ -100,6 +103,7 @@ export default function TowerConfigPopup({
     onChange({ ...tower, ...patch });
 
   const freqGhz = tower.frequency / 1e9;
+  const manualDeg = tower.manual_steering_deg ?? 0;
 
   return (
     <div
@@ -180,6 +184,58 @@ export default function TowerConfigPopup({
           hue={towerHue}
           onChange={v => update({ frequency: v * 1e9 })}
         />
+
+        {/* Divider */}
+        <div style={{ height: 1, background: `hsla(${towerHue},50%,40%,0.25)` }} />
+
+        {/* Manual steering section */}
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <span
+              className="text-[9px] font-mono uppercase tracking-wider"
+              style={{ color: `hsl(${towerHue},65%,72%)` }}
+            >
+              Manual Steering
+            </span>
+            {/* AUTO / MANUAL badge */}
+            <span
+              className="text-[8px] font-mono font-semibold px-1.5 py-0.5 rounded-full border"
+              style={isAutoSteering
+                ? {
+                    color: `hsl(140,75%,72%)`,
+                    borderColor: `hsla(140,65%,45%,0.55)`,
+                    background: `hsla(140,60%,30%,0.25)`,
+                  }
+                : {
+                    color: `hsl(${towerHue},80%,80%)`,
+                    borderColor: `hsla(${towerHue},65%,50%,0.55)`,
+                    background: `hsla(${towerHue},60%,30%,0.3)`,
+                  }
+              }
+            >
+              {isAutoSteering ? "AUTO" : "MANUAL"}
+            </span>
+          </div>
+
+          {isAutoSteering && (
+            <p className="text-[8px] font-mono" style={{ color: `hsla(${towerHue},50%,65%,0.7)` }}>
+              Auto-steering toward connected user.
+              Slider sets fallback when no user is connected.
+            </p>
+          )}
+
+          <SliderRow
+            label="Angle (no-user fallback)"
+            value={manualDeg}
+            min={-90}
+            max={90}
+            step={1}
+            format={v => `${v >= 0 ? "+" : ""}${v.toFixed(0)}°`}
+            hue={towerHue}
+            onChange={v => update({ manual_steering_deg: v })}
+          />
+        </div>
+
 
         {/* Position read-out */}
         <div

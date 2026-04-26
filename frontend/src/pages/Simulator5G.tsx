@@ -42,25 +42,25 @@ const DEFAULT_USERS = [
 // ─── Limits ───────────────────────────────────────────────────────────────────
 const MIN_TOWERS = 1;
 const MAX_TOWERS = 5;
-const MIN_USERS  = 1;
-const MAX_USERS  = 4;
+const MIN_USERS = 1;
+const MAX_USERS = 4;
 
 // ─── Unique color per tower (hue, saturation%, lightness%) ───────────────────
 const TOWER_COLORS: Record<number, { hue: number; name: string }> = {
   1: { hue: 270, name: "Violet" },
-  2: { hue: 185, name: "Cyan"   },
-  3: { hue:  35, name: "Amber"  },
-  4: { hue: 320, name: "Pink"   },
-  5: { hue: 160, name: "Teal"   },
+  2: { hue: 185, name: "Cyan" },
+  3: { hue: 35, name: "Amber" },
+  4: { hue: 320, name: "Pink" },
+  5: { hue: 160, name: "Teal" },
 };
 const DEFAULT_TOWER_HUE = 270;
 
 // ─── Unique color per user ────────────────────────────────────────────────────
 const USER_COLORS: Record<number, { hue: number; name: string }> = {
-  101: { hue: 340, name: "Rose"    },
-  102: { hue: 150, name: "Green"   },
-  103: { hue:  45, name: "Gold"    },
-  104: { hue: 200, name: "Sky"     },
+  101: { hue: 340, name: "Rose" },
+  102: { hue: 150, name: "Green" },
+  103: { hue: 45, name: "Gold" },
+  104: { hue: 200, name: "Sky" },
 };
 const DEFAULT_USER_HUE = 340;
 
@@ -119,6 +119,7 @@ export default function Simulator5G() {
       spacing: defaultParams.spacing,
       wavelength: defaultParams.wavelength,
       steering_angle_deg: defaultParams.steeringAngleDeg,
+      manual_steering_deg: 0,
       amplitude: defaultParams.amplitude,
       snr_db: defaultParams.snrDb,
       window_type: defaultParams.windowType,
@@ -145,7 +146,7 @@ export default function Simulator5G() {
       if (prev.length >= MAX_TOWERS) return prev;
       // Pick an id not already used (1-5)
       const usedIds = new Set(prev.map(t => t.id));
-      const newId = [1,2,3,4,5].find(i => !usedIds.has(i)) ?? (prev.length + 1);
+      const newId = [1, 2, 3, 4, 5].find(i => !usedIds.has(i)) ?? (prev.length + 1);
       // Spread towers evenly along the bottom band, offset by slot
       const slot = prev.length; // 0-based index
       const xFrac = (slot + 0.5) / MAX_TOWERS; // 0.1 … 0.9
@@ -180,7 +181,7 @@ export default function Simulator5G() {
     setLocalUsers(prev => {
       if (prev.length >= MAX_USERS) return prev;
       const usedIds = new Set(prev.map(u => u.id));
-      const newId = [101,102,103,104].find(i => !usedIds.has(i)) ?? (100 + prev.length + 1);
+      const newId = [101, 102, 103, 104].find(i => !usedIds.has(i)) ?? (100 + prev.length + 1);
       // Spawn at map centre with small random offset so they don't stack
       const cx = (WORLD_MIN_X + WORLD_MAX_X) / 2 + (Math.random() - 0.5) * 1.5;
       const cy = (WORLD_MIN_Y + WORLD_MAX_Y) / 2 + (Math.random() - 0.5) * 1.5;
@@ -944,38 +945,60 @@ export default function Simulator5G() {
         const tx = toCanvasX(tower.x), ty = toCanvasY(tower.y);
         const hue = TOWER_COLORS[tower.id]?.hue ?? DEFAULT_TOWER_HUE;
 
-        // Pick nearest connected user for this tower (if multiple users attach to same tower).
-        let connectedUser: (typeof localUsers)[number] | null = null;
-        let bestDist = Number.POSITIVE_INFINITY;
-        for (const u of localUsers) {
-          const connTowId = liveConnectedTowerByUserId.get(u.id) ?? null;
-          if (connTowId !== tower.id) continue;
-          const d = Math.hypot(u.x - tower.x, u.y - tower.y);
-          if (d < bestDist) {
-            bestDist = d;
-            connectedUser = u;
+        // ── Steering and Lobe logic ────────────────────────────────────────────────
+        const connectedUsersForThisTower = localUsers.filter(
+          (u) => liveConnectedTowerByUserId.get(u.id) === tower.id,
+        );
+        const isAutoSteering = connectedUsersForThisTower.length > 0;
+        
+        let primaryUser: (typeof localUsers)[number] | null = null;
+        if (isAutoSteering) {
+          let bestDist = Number.POSITIVE_INFINITY;
+          for (const u of connectedUsersForThisTower) {
+            const d = Math.hypot(u.x - tower.x, u.y - tower.y);
+            if (d < bestDist) { bestDist = d; primaryUser = u; }
           }
         }
 
-        // Build telemetry label — show per-user element allocation when tower is shared
+        const lobeOrigin = towerArrayCenterById.get(tower.id);
+        const lx = lobeOrigin?.x ?? tx;
+        const ly = lobeOrigin?.y ?? ty;
+
+        let canvasAngle: number;
+        let lobeMaxRadiusPx: number;
+        let effectiveSteerDeg: number;
+
+        if (primaryUser) {
+          const ux = toCanvasX(primaryUser.x);
+          const uy = toCanvasY(primaryUser.y);
+          const dxC = ux - lx;
+          const dyC = uy - ly;
+          const distPx = Math.hypot(dxC, dyC);
+          canvasAngle = Math.atan2(dxC, -dyC);
+          lobeMaxRadiusPx = distPx - 6; 
+          effectiveSteerDeg = (Math.atan2(primaryUser.x - tower.x, primaryUser.y - tower.y) * 180) / Math.PI;
+        } else {
+          effectiveSteerDeg = tower.manual_steering_deg ?? 0;
+          canvasAngle = (effectiveSteerDeg * Math.PI) / 180;
+          const coverPx = (drawCoverageRadiusByTowerId.get(tower.id) ?? 4.5) * mToPx;
+          lobeMaxRadiusPx = Math.max(26, Math.min(coverPx * 0.9, CANVAS_W * 0.2));
+        }
+
         const towerAllocs = elementAllocsByTowerId.get(tower.id) ?? [];
         let statusLine1: string;
         let statusLine2: string | null = null;
 
         if (towerAllocs.length >= 2) {
-          // Multi-user: show element split
           statusLine1 = towerAllocs
             .map(a => `${a.num_elements} elements → U${a.user_id}`)
             .join(", ");
-          statusLine2 = null;
-        } else if (connectedUser) {
-          const thetaRad = Math.atan2(connectedUser.x - tower.x, connectedUser.y - tower.y);
-          statusLine1 = `θ ${((thetaRad * 180) / Math.PI).toFixed(1)}°`;
+        } else if (isAutoSteering) {
+          statusLine1 = `θ ${effectiveSteerDeg.toFixed(1)}° AUTO`;
           const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
-          const deltaPhiRad = 2 * Math.PI * towerSpacingLambda * Math.sin(thetaRad);
+          const deltaPhiRad = 2 * Math.PI * towerSpacingLambda * Math.sin((effectiveSteerDeg * Math.PI) / 180);
           statusLine2 = `Δφ ${deltaPhiRad.toFixed(2)} rad`;
         } else {
-          statusLine1 = "No user";
+          statusLine1 = `θ ${effectiveSteerDeg.toFixed(1)}° MANUAL`;
         }
 
         ctx.fillStyle = `hsl(${hue},70%,55%)`;
@@ -989,50 +1012,45 @@ export default function Simulator5G() {
         ctx.fill();
         ctx.stroke();
 
-        // Draw AF lobe above tower body so the beam base is never visually clipped.
-        if (connectedUser) {
-          const lobeOrigin = towerArrayCenterById.get(tower.id);
-          const lx = lobeOrigin?.x ?? tx;
-          // Emit from just below the tower glyph so the beam is visible under the triangle body.
-          const ly = (lobeOrigin?.y ?? ty) + 8;
-          const steerDeg = (Math.atan2(connectedUser.x - tower.x, connectedUser.y - tower.y) * 180) / Math.PI;
+        const elemN = Math.max(2, Math.min(64, Math.round(Number((tower as any).num_elements ?? 16))));
+        const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
+        const towerWindowType = String((tower as any).window_type ?? "rectangular");
+        const towerApodizationEnabled = Boolean((tower as any).apodization_enabled ?? false);
+        const weights = buildWindowWeights(elemN, towerWindowType, towerApodizationEnabled);
+        
+        const points: Array<{ x: number; y: number }> = [];
+        const baseLobeRadiusPx = 6;
+        for (const rel of lobeAngles) {
+          const af = computeArrayFactorNorm(rel, 0, elemN, towerSpacingLambda, weights);
+          const r = baseLobeRadiusPx + lobeMaxRadiusPx * Math.pow(af, 0.92);
+          const a = (rel * Math.PI) / 180;
+          points.push({ x: Math.sin(a) * r, y: -Math.cos(a) * r });
+        }
 
-          const elemN = Math.max(2, Math.min(64, Math.round(Number((tower as any).num_elements ?? 16))));
-          const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
-          const towerWindowType = String((tower as any).window_type ?? "rectangular");
-          const towerApodizationEnabled = Boolean((tower as any).apodization_enabled ?? false);
-          const weights = buildWindowWeights(elemN, towerWindowType, towerApodizationEnabled);
-          const coverPx = (drawCoverageRadiusByTowerId.get(tower.id) ?? 4.5) * mToPx;
-          const maxLobeRadiusPx = Math.max(26, Math.min(coverPx * 0.96, CANVAS_W * 0.24));
+        if (points.length > 1) {
+          ctx.save();
+          ctx.translate(lx, ly);
+          ctx.rotate(canvasAngle);
 
-          const points: Array<{ x: number; y: number }> = [];
-          const baseLobeRadiusPx = 6;
-          for (const rel of lobeAngles) {
-            const absDeg = steerDeg + rel;
-            const af = computeArrayFactorNorm(absDeg, steerDeg, elemN, towerSpacingLambda, weights);
-            const r = baseLobeRadiusPx + maxLobeRadiusPx * Math.pow(af, 0.92);
-            const a = (absDeg * Math.PI) / 180;
-            points.push({ x: lx + Math.sin(a) * r, y: ly - Math.cos(a) * r });
-          }
+          ctx.setLineDash(isAutoSteering ? [] : [4, 3]);
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          for (const p of points) ctx.lineTo(p.x, p.y);
+          ctx.closePath();
 
-          if (points.length > 1) {
-            ctx.setLineDash([]);
-            ctx.beginPath();
-            ctx.moveTo(lx, ly);
-            for (const p of points) ctx.lineTo(p.x, p.y);
-            ctx.closePath();
+          const lobeFillAlpha = isAutoSteering ? (towerApodizationEnabled ? 0.20 : 0.14) : 0.08;
+          ctx.fillStyle = `hsla(${hue},88%,62%,${lobeFillAlpha})`;
+          ctx.fill();
 
-            const lobeFillAlpha = towerApodizationEnabled ? 0.20 : 0.14;
-            ctx.fillStyle = `hsla(${hue},88%,62%,${lobeFillAlpha})`;
-            ctx.fill();
+          ctx.strokeStyle = `hsla(${hue},92%,70%,${isAutoSteering ? (towerApodizationEnabled ? 0.9 : 0.72) : 0.4})`;
+          ctx.lineWidth = isAutoSteering ? (towerApodizationEnabled ? 1.7 : 1.4) : 1.1;
+          ctx.beginPath();
+          ctx.moveTo(points[0].x, points[0].y);
+          for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+          ctx.stroke();
 
-            ctx.strokeStyle = `hsla(${hue},92%,70%,${towerApodizationEnabled ? 0.9 : 0.72})`;
-            ctx.lineWidth = towerApodizationEnabled ? 1.7 : 1.4;
-            ctx.beginPath();
-            ctx.moveTo(points[0].x, points[0].y);
-            for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-            ctx.stroke();
-          }
+          ctx.restore();
+          ctx.setLineDash([]);
         }
 
         ctx.fillStyle = `hsl(${hue},70%,88%)`;
@@ -1040,7 +1058,6 @@ export default function Simulator5G() {
         ctx.textAlign = "center";
         ctx.fillText(`T${tower.id}`, tx, ty + 22);
 
-        // Live tower telemetry label: steering angle and phase shift toward connected user.
         ctx.font = "8px JetBrains Mono, monospace";
         const lines = statusLine2 ? [statusLine1, statusLine2] : [statusLine1];
         const lineHeight = 10;
@@ -1057,13 +1074,13 @@ export default function Simulator5G() {
         const boxY = ty - 16 - boxH;
 
         ctx.fillStyle = `hsla(${hue},35%,10%,0.82)`;
-        ctx.strokeStyle = `hsla(${hue},70%,65%,0.65)`;
+        ctx.strokeStyle = isAutoSteering ? `hsla(140,65%,50%,0.65)` : `hsla(${hue},70%,65%,0.65)`;
         ctx.lineWidth = 1;
         ctx.fillRect(boxX, boxY, boxW, boxH);
         ctx.strokeRect(boxX, boxY, boxW, boxH);
 
         ctx.textAlign = "left";
-        ctx.fillStyle = connectedUser ? `hsla(${hue},85%,82%,0.95)` : "hsla(0,0%,85%,0.95)";
+        ctx.fillStyle = isAutoSteering ? `hsla(140,80%,80%,0.95)` : `hsla(${hue},85%,82%,0.95)`;
         for (let i = 0; i < lines.length; i++) {
           ctx.fillText(lines[i], boxX + padX, boxY + padY + (i + 1) * lineHeight - 2);
         }
@@ -1679,6 +1696,9 @@ export default function Simulator5G() {
               towerHue={color?.hue ?? DEFAULT_TOWER_HUE}
               towerName={color?.name ?? `Tower ${selectedTowerId}`}
               anchorPx={towerPopupAnchor}
+              isAutoSteering={localUsers.some(
+                (u) => liveConnectedTowerByUserId.get(u.id) === selectedTowerId,
+              )}
               onClose={() => { setSelectedTowerId(null); setTowerPopupAnchor(null); }}
               onChange={handleTowerParamChange}
             />
