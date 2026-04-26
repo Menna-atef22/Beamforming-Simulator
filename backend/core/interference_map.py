@@ -106,6 +106,12 @@ class InterferenceMap:
         # Get element positions and weights
         element_positions = self.array.get_element_positions()
         weights = self.window.get_weights()
+
+        # Normalization: prevent amplitudes from growing with N by normalizing
+        # coherent sum by the total weight (sum of element weights).
+        total_weight = sum(weights) if weights else 1.0
+        if total_weight <= 0:
+            total_weight = 1.0
         
         for yi in range(grid_size):
             row = []
@@ -140,7 +146,8 @@ class InterferenceMap:
                     total_phase = propagation_phase + steering_phase
                     
                     # Amplitude includes: element weight, apodization, path loss (1/r)
-                    element_amplitude = weights[n] * self.signal.amplitude / math.sqrt(distance)
+                    # Normalize by total_weight to keep values comparable when N grows
+                    element_amplitude = (weights[n] * self.signal.amplitude / math.sqrt(distance)) / total_weight
                     
                     # Complex field contribution from this element
                     real_sum += element_amplitude * math.cos(total_phase)

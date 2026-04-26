@@ -287,6 +287,7 @@ class BeamformingEngine:
         steering_angle_deg: float,
         depth: float = None,
         num_samples: int = 80,
+        extent: float = None,
         steering_angles_deg: List[float] = None
     ) -> List[dict]:
         """Compute 1D signal profile (line cut) through beam pattern.
@@ -314,10 +315,15 @@ class BeamformingEngine:
             raise ValueError("num_samples must be >= 2")
         
         profile = []
-        extent = self.DEFAULT_EXTENT
+        extent = extent if extent is not None else self.DEFAULT_EXTENT
         
         element_positions = self.array.get_element_positions()
         weights = self.window.get_weights()
+
+        # Normalize amplitudes by sum of weights (consistent with 2D map)
+        total_weight = sum(weights) if weights else 1.0
+        if total_weight <= 0:
+            total_weight = 1.0
         
         for sample_idx in range(num_samples):
             # Position along horizontal line at given depth
@@ -351,8 +357,8 @@ class BeamformingEngine:
                 # Total phase
                 total_phase = propagation_phase + steering_phase
                 
-                # Amplitude with window weight and path loss
-                amplitude = weights[n] * self.signal.amplitude / math.sqrt(distance)
+                # Amplitude with window weight and path loss (normalized)
+                amplitude = (weights[n] * self.signal.amplitude / math.sqrt(distance)) / total_weight
                 
                 real_sum += amplitude * math.cos(total_phase)
                 imag_sum += amplitude * math.sin(total_phase)
@@ -427,18 +433,37 @@ class BeamformingEngine:
         # Compute metrics from steered beam
         metrics = self._compute_metrics(beam_pattern)
         
-        # Generate 2D interference map
+        # Compute array aperture (meters): N * element spacing
+        aperture = self.array.num_elements * self.array.get_element_spacing_meters()
+
+        # Determine dynamic extent so the array fits and some propagation distance
+        # is visible. Use a multiple of aperture for depth/width and cap to a
+        # reasonable maximum (100 * wavelength) to avoid extreme zoom-out.
+        dynamic_extent = max(self.DEFAULT_EXTENT, 4.0 * aperture)
+        max_extent = 100.0 * self.array.wavelength
+        dynamic_extent = min(dynamic_extent, max_extent)
+
+        # Generate 2D interference map using the computed extent
         interference_map = self.interference_map_engine.compute_2d_map(
             steering_angle_deg=steering_angle_deg,
             grid_size=grid_size,
-            extent=self.DEFAULT_EXTENT,
+            extent=dynamic_extent,
             apply_noise=enable_noise
         )
-        
-        # Compute 1D signal profile
+
+        # Compute Fraunhofer (far-field) distance and choose profile depth
+        wavelength = self.array.wavelength
+        fraunhofer_dist = 2.0 * (aperture ** 2) / max(wavelength, 1e-12)
+        # Desired depth is at least the Fraunhofer distance, but cap to max_extent
+        desired_profile_depth = max(profile_depth, fraunhofer_dist)
+        final_profile_depth = min(desired_profile_depth, max_extent)
+
+        # Compute 1D signal profile at the chosen depth and along the same extent
         signal_profile = self._compute_signal_profile(
             steering_angle_deg,
-            depth=profile_depth,
+            depth=final_profile_depth,
+            num_samples=max(80, 8 * self.array.num_elements),
+            extent=dynamic_extent,
             steering_angles_deg=steering_angles_deg
         )
         
