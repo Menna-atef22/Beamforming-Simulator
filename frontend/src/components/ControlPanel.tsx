@@ -82,7 +82,11 @@ export default function ControlPanel({
   metrics,
   extra,
 }: ControlPanelProps) {
-  const wavelength = Math.max(0.01, Number(params.wavelength ?? 1.0));
+  const c = 3e8;
+  const rawWavelength = params.wavelength ?? undefined;
+  const rawFrequencyGhz = params.frequency ?? undefined; // frontend frequency stored as GHz
+  const wavelengthFromFreq = rawFrequencyGhz ? c / (Number(rawFrequencyGhz) * 1e9) : undefined;
+  const wavelength = Math.max(1e-6, Number(rawWavelength ?? wavelengthFromFreq ?? 1.0));
   const steeringRad = ((params.steeringAngleDeg ?? 0) * Math.PI) / 180;
   const rawPhase =
     ((2 * Math.PI) / wavelength) *
@@ -164,12 +168,12 @@ export default function ControlPanel({
       )}
       <SliderControl
         label="Frequency"
-        value={params.wavelength ?? 1.0}
+        value={params.frequency ?? 1.0}
         min={0.1}
-        max={3.0}
-        step={0.05}
-        unit="m"
-        onChange={(v) => onParamChange("wavelength", v)}
+        max={30.0}
+        step={0.01}
+        unit="GHz"
+        onChange={(v) => onParamChange("frequency", v)}
       />
       <SliderControl
         label="Steering (θ)"

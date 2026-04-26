@@ -27,7 +27,9 @@ export function useBeamformingAPI() {
           spacing: params.spacing ?? 0.5,
           geometry: params.geometry ?? "linear",
           radius: params.radius ?? 5,
-          wavelength: params.wavelength ?? 1.0,
+          // Frontend `frequency` is provided in GHz; convert to Hz for backend.
+          frequency: params.frequency !== undefined ? Number(params.frequency) * 1e9 : undefined,
+          wavelength: params.wavelength ?? undefined,
           steering_angle_deg: params.steering_angle_deg ?? params.steeringAngleDeg ?? 0,
           amplitude: params.amplitude ?? 1.0,
           snr_db: params.snr_db ?? params.snrDb ?? 30,
