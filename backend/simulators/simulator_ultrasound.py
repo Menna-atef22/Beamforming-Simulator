@@ -922,10 +922,12 @@ class SimulatorUltrasound(BeamformingEngine):
             
             # Add noise
             if enable_noise:
-                noise_power = self.noise.get_noise_power() / self.signal.amplitude
-                total_power = max(0, total_power + noise_power * 0.01)
+                total_power = self.noise.add_awgn_to_scalar(
+                    total_power,
+                    reference_signal_power=max(self.signal.amplitude ** 2, 1e-12),
+                )
             
-            power.append(total_power)
+            power.append(max(0.0, total_power))
         
         # Convert to dB
         power_db = [20 * math.log10(max(p, 1e-10)) for p in power]

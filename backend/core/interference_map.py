@@ -174,7 +174,13 @@ class InterferenceMap:
                 
                 # Apply noise if enabled
                 if apply_noise:
-                    magnitude = self.noise.add_noise_to_scalar(magnitude)
+                    # Use a stable reference power so noise floor remains
+                    # spatially consistent for a given SNR setting.
+                    ref_power = max((self.signal.amplitude ** 2), 1e-12)
+                    magnitude = self.noise.add_awgn_to_scalar(
+                        magnitude,
+                        reference_signal_power=ref_power
+                    )
                 
                 # Ensure non-negative magnitude
                 magnitude = max(0.0, magnitude)

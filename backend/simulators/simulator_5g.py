@@ -708,8 +708,16 @@ class Simulator5G(BeamformingEngine):
                     gain = self._get_beam_gain_at_angle(angle_to_user, tower.steering_angle_deg)
                     signal = amplitude * gain / max(distance * distance, 1e-6)
                 total_signal += signal
-            
-            user.signal_strength = total_signal
+
+            # Add AWGN with a stable reference power (per-user aggregate link level).
+            if self.noise.noise_enabled:
+                ref_power = max(self.signal.amplitude ** 2, 1e-12)
+                total_signal = self.noise.add_awgn_to_scalar(
+                    total_signal,
+                    reference_signal_power=ref_power
+                )
+
+            user.signal_strength = max(0.0, total_signal)
             user.snr_db = self.noise.snr_db
     
     def run(

@@ -23,6 +23,8 @@ interface ControlPanelProps {
   ) => void;
   metrics?: BeamMetrics;
   extra?: React.ReactNode;
+  sliderLabels?: Partial<Record<"amplitude" | "profileDepth", string>>;
+  hiddenSliders?: Partial<Record<"amplitude" | "profileDepth", boolean>>;
 }
 
 function SliderControl({
@@ -84,6 +86,8 @@ export default function ControlPanel({
   onParamChange,
   metrics,
   extra,
+  sliderLabels,
+  hiddenSliders,
 }: ControlPanelProps) {
   const c = 3e8;
   const rawWavelength = params.wavelength ?? undefined;
@@ -188,24 +192,28 @@ export default function ControlPanel({
         disabled={params.autoSteer}
         onChange={(v) => onParamChange("steeringAngleDeg", v)}
       />
-      <SliderControl
-        label="Amplitude"
-        value={params.amplitude}
-        min={0.1}
-        max={2.0}
-        step={0.05}
-        onChange={(v) => onParamChange("amplitude", v)}
-      />
+      {!hiddenSliders?.amplitude && (
+        <SliderControl
+          label={sliderLabels?.amplitude ?? "Amplitude"}
+          value={params.amplitude}
+          min={0.1}
+          max={2.0}
+          step={0.05}
+          onChange={(v) => onParamChange("amplitude", v)}
+        />
+      )}
 
-      <SliderControl
-        label="Profile Depth"
-        value={params.profileDepth ?? 2.0}
-        min={0.1}
-        max={100}
-        step={0.1}
-        unit="m"
-        onChange={(v) => onParamChange("profileDepth", v)}
-      />
+      {!hiddenSliders?.profileDepth && (
+        <SliderControl
+          label={sliderLabels?.profileDepth ?? "Profile Depth"}
+          value={params.profileDepth ?? 2.0}
+          min={0.1}
+          max={100}
+          step={0.1}
+          unit="m"
+          onChange={(v) => onParamChange("profileDepth", v)}
+        />
+      )}
 
       {/* Signal Quality */}
       <SectionHeader title="Signal Quality" />

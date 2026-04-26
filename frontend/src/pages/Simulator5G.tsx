@@ -11,6 +11,8 @@ import {
 import BeamPlot from "@/components/BeamPlot";
 import HeatmapView from "@/components/HeatmapView";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Slider } from "@/components/ui/slider";
+import { Label } from "@/components/ui/label";
 import TowerConfigPopup, { TowerParams } from "@/components/TowerConfigPopup";
 import "./Simulator5G.css";
 
@@ -318,35 +320,60 @@ export default function Simulator5G() {
   // ─── Keyboard movement ────────────────────────────────────────────────────
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (selectedUserId === null) return;
-
       // Only intercept movement keys
       const moveKeys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "w", "a", "s", "d", "W", "A", "S", "D"];
       if (!moveKeys.includes(e.key)) return;
 
-      e.preventDefault(); // stop page scroll
+      // Move selected user if one is active.
+      if (selectedUserId !== null) {
+        e.preventDefault(); // stop page scroll
 
-      setLocalUsers(prev => prev.map(u => {
-        if (u.id !== selectedUserId) return u;
-        let nx = u.x;
-        let ny = u.y;
-        switch (e.key) {
-          case "ArrowUp": case "w": case "W": ny += STEP; break;
-          case "ArrowDown": case "s": case "S": ny -= STEP; break;
-          case "ArrowLeft": case "a": case "A": nx -= STEP; break;
-          case "ArrowRight": case "d": case "D": nx += STEP; break;
-        }
-        nx = Math.max(WORLD_MIN_X, Math.min(WORLD_MAX_X, nx));
-        ny = Math.max(WORLD_MIN_Y, Math.min(WORLD_MAX_Y, ny));
-        return { ...u, x: nx, y: ny };
-      }));
+        setLocalUsers(prev => prev.map(u => {
+          if (u.id !== selectedUserId) return u;
+          let nx = u.x;
+          let ny = u.y;
+          switch (e.key) {
+            case "ArrowUp": case "w": case "W": ny += STEP; break;
+            case "ArrowDown": case "s": case "S": ny -= STEP; break;
+            case "ArrowLeft": case "a": case "A": nx -= STEP; break;
+            case "ArrowRight": case "d": case "D": nx += STEP; break;
+          }
+          nx = Math.max(WORLD_MIN_X, Math.min(WORLD_MAX_X, nx));
+          ny = Math.max(WORLD_MIN_Y, Math.min(WORLD_MAX_Y, ny));
+          return { ...u, x: nx, y: ny };
+        }));
 
-      triggerSimAfterMove();
+        triggerSimAfterMove();
+        return;
+      }
+
+      // Move selected tower if one is active.
+      if (selectedTowerId !== null) {
+        e.preventDefault(); // stop page scroll
+
+        setLocalTowers(prev => prev.map(t => {
+          if (t.id !== selectedTowerId) return t;
+          let nx = t.x;
+          let ny = t.y;
+          switch (e.key) {
+            case "ArrowUp": case "w": case "W": ny += STEP; break;
+            case "ArrowDown": case "s": case "S": ny -= STEP; break;
+            case "ArrowLeft": case "a": case "A": nx -= STEP; break;
+            case "ArrowRight": case "d": case "D": nx += STEP; break;
+          }
+          nx = Math.max(WORLD_MIN_X, Math.min(WORLD_MAX_X, nx));
+          ny = Math.max(WORLD_MIN_Y, Math.min(WORLD_MAX_Y, ny));
+          return { ...t, x: nx, y: ny };
+        }));
+
+        triggerSimAfterMove();
+      }
+
     };
 
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [selectedUserId, triggerSimAfterMove]);
+  }, [selectedUserId, selectedTowerId, triggerSimAfterMove]);
 
   const towerToControlParams = useCallback((tower?: TowerParams | null): BeamformingParams & Record<string, any> => ({
     ...defaultParams,
@@ -1878,6 +1905,57 @@ export default function Simulator5G() {
     return { curveData, markers };
   }, [localUsers, localTowers, liveConnectedTowerByUserId, elementAllocsByTowerId, towerCoverageRadiusByTowerId, mapViewport, CANVAS_W, CANVAS_H]);
 
+  const panelTower = useMemo(
+    () => localTowers.find((t) => t.id === panelTowerId) ?? null,
+    [localTowers, panelTowerId],
+  );
+
+  const fiveGControlExtras = useMemo(() => (
+    <div className="space-y-3">
+      <div className="space-y-1.5">
+        <div className="flex justify-between items-center">
+          <Label className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
+            Coverage Radius
+          </Label>
+          <span className="text-xs font-mono text-foreground tabular-nums">
+            {Number(panelTower?.coverage_radius_m ?? 5).toFixed(1)} m
+          </span>
+        </div>
+        <Slider
+          value={[Number(panelTower?.coverage_radius_m ?? 5)]}
+          min={1}
+          max={12}
+          step={0.1}
+          onValueChange={([v]) => {
+            setLocalTowers((prev) =>
+              prev.map((t) =>
+                t.id === panelTowerId ? { ...t, coverage_radius_m: v } : t,
+              ),
+            );
+          }}
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="flex justify-between items-center">
+          <Label className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
+            Heatmap Resolution
+          </Label>
+          <span className="text-xs font-mono text-foreground tabular-nums">
+            {Math.round(Number(params.gridSize ?? 80))}
+          </span>
+        </div>
+        <Slider
+          value={[Math.round(Number(params.gridSize ?? 80))]}
+          min={40}
+          max={180}
+          step={10}
+          onValueChange={([v]) => updateParam("gridSize", Math.round(v))}
+        />
+      </div>
+    </div>
+  ), [panelTower, panelTowerId, params.gridSize, updateParam]);
+
   const panelControl = useMemo(() => (
     <div className="h-full flex flex-col">
       <div className="px-4 py-3 border-b border-border/50 bg-card/70">
@@ -1940,11 +2018,16 @@ export default function Simulator5G() {
             ...params, 
             autoSteer: localUsers.some(u => liveConnectedTowerByUserId.get(u.id) === panelTowerId) 
           }} 
-          onParamChange={updateParam} 
+          onParamChange={updateParam}
+          hiddenSliders={{
+            amplitude: true,
+            profileDepth: true,
+          }}
+          extra={fiveGControlExtras}
         />
       </div>
     </div>
-  ), [panelTowerId, params, localTowers, addTower, removeTower]);
+  ), [panelTowerId, params, localTowers, localUsers, liveConnectedTowerByUserId, addTower, removeTower, fiveGControlExtras]);
 
   return (
     <MainLayout controlPanel={panelControl}>
@@ -2000,9 +2083,13 @@ export default function Simulator5G() {
               <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-300 border border-yellow-500/30">
                 ✦ U{selectedUserId} selected — W/A/S/D or ↑↓←→ to move
               </span>
+            ) : selectedTowerId !== null ? (
+              <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                ✦ T{selectedTowerId} selected — W/A/S/D or ↑↓←→ to move
+              </span>
             ) : (
               <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 text-muted-foreground border border-white/10">
-                Click a user (●) to select · W/A/S/D or arrows to move
+                Click a user (●) or tower (▲) to select · W/A/S/D or arrows to move
               </span>
             )}
             {/* Dynamic tower color swatches */}

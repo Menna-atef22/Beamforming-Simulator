@@ -40,6 +40,13 @@ class NoiseModel:
             self.snr_linear = math.pow(10, snr_db / 10)
         
         self.noise_enabled: bool = noise_enabled
+
+    @property
+    def snr_amplitude_ratio(self) -> float:
+        """Return amplitude-domain SNR ratio: 10^(SNR_dB/20)."""
+        if math.isinf(self.snr_db):
+            return float("inf")
+        return math.pow(10, self.snr_db / 20.0)
     
     def enable_noise(self) -> None:
         """Enable noise addition."""
@@ -90,6 +97,17 @@ class NoiseModel:
             return 0.0
         
         return signal_power / self.snr_linear
+
+    def compute_noise_std(self, signal_power: float) -> float:
+        """Compute noise standard deviation for a real-valued signal.
+
+        For AWGN with target power-domain SNR:
+            sigma^2 = P_noise = P_signal / SNR_linear
+        """
+        noise_power = self.compute_noise_power(signal_power)
+        if noise_power <= 0:
+            return 0.0
+        return math.sqrt(noise_power)
     
     def get_noise_power(self, signal_power: float = 1.0) -> float:
         """Get noise power (normalized or relative to signal power).
@@ -131,6 +149,28 @@ class NoiseModel:
         noise = gaussian_var * math.sqrt(noise_power)
         
         return signal + noise
+
+    def add_awgn_to_scalar(
+        self,
+        signal: float,
+        reference_signal_power: Optional[float] = None,
+        min_reference_power: float = 1e-12
+    ) -> float:
+        """Add AWGN using a stable reference signal power.
+
+        Unlike add_noise_to_scalar(), this keeps a consistent noise floor by
+        using reference_signal_power (if provided) instead of |signal|^2.
+        """
+        if not self.noise_enabled or math.isinf(self.snr_linear):
+            return signal
+
+        if reference_signal_power is None:
+            reference_signal_power = signal * signal
+        reference_signal_power = max(float(reference_signal_power), min_reference_power)
+        sigma = self.compute_noise_std(reference_signal_power)
+        if sigma <= 0:
+            return signal
+        return signal + self._gaussian_random() * sigma
     
     def add_noise_to_complex(self, real: float, imag: float) -> tuple:
         """Add Gaussian noise to complex signal (I/Q components).
@@ -154,9 +194,10 @@ class NoiseModel:
         if noise_power <= 0:
             return (real, imag)
         
-        # Independent noise on each component
-        noise_real = self._gaussian_random() * math.sqrt(noise_power)
-        noise_imag = self._gaussian_random() * math.sqrt(noise_power)
+        # Split total complex noise power across I/Q components equally.
+        component_sigma = math.sqrt(noise_power / 2.0)
+        noise_real = self._gaussian_random() * component_sigma
+        noise_imag = self._gaussian_random() * component_sigma
         
         return (real + noise_real, imag + noise_imag)
     
@@ -169,7 +210,18 @@ class NoiseModel:
         Returns:
             List of noisy signals (same length as input).
         """
-        return [self.add_noise_to_scalar(s) for s in signals]
+        if not signals:
+            return []
+        if not self.noise_enabled or math.isinf(self.snr_linear):
+            return list(signals)
+
+        avg_signal_power = sum(s * s for s in signals) / max(len(signals), 1)
+        avg_signal_power = max(avg_signal_power, 1e-12)
+        sigma = self.compute_noise_std(avg_signal_power)
+        if sigma <= 0:
+            return list(signals)
+
+        return [s + self._gaussian_random() * sigma for s in signals]
     
     def set_snr(self, snr_db: float) -> None:
         """Update SNR setting.
