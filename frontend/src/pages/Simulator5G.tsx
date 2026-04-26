@@ -127,6 +127,7 @@ export default function Simulator5G() {
       apodization_enabled: defaultParams.apodizationEnabled,
       geometry: defaultParams.geometry ?? "linear",
       radius: Number.isFinite(Number(defaultParams.radius)) ? Number(defaultParams.radius) : 50,
+      currentSteeringAngle: defaultParams.steeringAngleDeg ?? 0,
     }))
   );
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
@@ -286,19 +287,7 @@ export default function Simulator5G() {
 
         // Sync steering angles: update localTowers with the backend's computed
         // auto-steering angles so the Control Panel slider stays in sync.
-        const apiSteeringById = new Map<number, number>(
-          (res.data?.towers ?? []).map((t: any) => [
-            Number(t.id),
-            Number(t.steering_angle_deg ?? 0),
-          ])
-        );
-        if (apiSteeringById.size > 0) {
-          setLocalTowers(prev => prev.map(t => {
-            const newAngle = apiSteeringById.get(t.id);
-            if (newAngle === undefined) return t;
-            return { ...t, steering_angle_deg: newAngle };
-          }));
-        }
+        // REMOVED: Frontend animation loop now handles this exclusively to prevent oscillation.
       }
     } finally {
       setIsLoading(false);
@@ -415,7 +404,13 @@ export default function Simulator5G() {
           return { ...tower, wavelength: Number(value) };
         case "steeringAngleDeg":
           // Also update manual_steering_deg so the popup slider stays in sync
-          return { ...tower, steering_angle_deg: Number(value), manual_steering_deg: Number(value) };
+          // AND currentSteeringAngle so the manual input takes immediate effect on the UI
+          return { 
+            ...tower, 
+            steering_angle_deg: Number(value), 
+            manual_steering_deg: Number(value),
+            currentSteeringAngle: Number(value) 
+          };
         case "amplitude":
           return { ...tower, amplitude: Number(value) };
         case "snrDb":
@@ -814,6 +809,34 @@ export default function Simulator5G() {
     let rafId = 0;
 
     const drawFrame = (timeMs: number) => {
+      // ─── Real-time Auto-Steering sync ─────────────────────────────────────
+      // We compute the physical angle toward the connected user on every frame
+      // so the UI sliders and arcs update smoothly without waiting for API ticks.
+      let towersChanged = false;
+      const nextTowers = localTowers.map(t => {
+        const connUser = localUsers.find(u => liveConnectedTowerByUserId.get(u.id) === t.id);
+        if (connUser) {
+          const dx = connUser.x - t.x;
+          const dy = connUser.y - t.y;
+          // 0° = North (up), CW positive. atan2(dx, dy) matches this perfectly.
+          const angleDeg = Math.atan2(dx, dy) * 180 / Math.PI;
+          // Threshold of 0.05 degrees to avoid micro-jitter state updates
+          if (Math.abs((t.currentSteeringAngle ?? 0) - angleDeg) > 0.05) {
+            towersChanged = true;
+            return { ...t, currentSteeringAngle: angleDeg };
+          }
+        } else if (t.currentSteeringAngle !== undefined && t.currentSteeringAngle !== t.steering_angle_deg) {
+           // If user disconnected, revert currentSteeringAngle to the manual setting (which was synced via slider)
+           towersChanged = true;
+           return { ...t, currentSteeringAngle: t.steering_angle_deg };
+        }
+        return t;
+      });
+
+      if (towersChanged) {
+        setLocalTowers(nextTowers);
+      }
+
       // Background
       ctx.fillStyle = "hsl(240,10%,12%)";
       ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
@@ -1095,13 +1118,14 @@ export default function Simulator5G() {
             .join(", ");
         } else if (isAutoSteering) {
           const alloc = towerAllocs[0];
-          statusLine1 = `θ ${alloc.angle_deg?.toFixed(1)}° AUTO`;
+          const displayDeg = tower.currentSteeringAngle ?? alloc.angle_deg ?? 0;
+          statusLine1 = `θ ${displayDeg.toFixed(1)}° AUTO`;
           const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
-          const deltaPhiRad = 2 * Math.PI * towerSpacingLambda * Math.sin((alloc.angle_deg * Math.PI) / 180);
+          const deltaPhiRad = 2 * Math.PI * towerSpacingLambda * Math.sin((displayDeg * Math.PI) / 180);
           statusLine2 = `Δφ ${deltaPhiRad.toFixed(2)} rad`;
         } else {
-          const manualDeg = tower.manual_steering_deg ?? 0;
-          statusLine1 = `θ ${manualDeg.toFixed(1)}° MANUAL`;
+          const displayDeg = tower.currentSteeringAngle ?? tower.manual_steering_deg ?? 0;
+          statusLine1 = `θ ${displayDeg.toFixed(1)}° MANUAL`;
         }
 
         ctx.fillStyle = `hsl(${hue},70%,55%)`;
@@ -1200,8 +1224,8 @@ export default function Simulator5G() {
 
         // Draw manual fallback beam if NO users connected
         if (!isAutoSteering) {
-          const manualDeg = tower.manual_steering_deg ?? 0;
-          const canvasAngle = (manualDeg * Math.PI) / 180;
+          const displayDeg = tower.currentSteeringAngle ?? tower.manual_steering_deg ?? 0;
+          const canvasAngle = (displayDeg * Math.PI) / 180;
           const coverPx = (drawCoverageRadiusByTowerId.get(tower.id) ?? 4.5) * mToPx;
           const lobeMaxRadiusPx = Math.max(26, Math.min(coverPx, CANVAS_W * 0.2));
 
@@ -1385,6 +1409,7 @@ export default function Simulator5G() {
     const synced: TowerParams = {
       ...updated,
       steering_angle_deg: updated.manual_steering_deg ?? updated.steering_angle_deg,
+      currentSteeringAngle: updated.manual_steering_deg ?? updated.steering_angle_deg,
     };
     setLocalTowers(prev => prev.map(t => t.id === synced.id ? synced : t));
     // Trigger re-simulation with short debounce (done via useEffect on localTowers)
@@ -1472,12 +1497,23 @@ export default function Simulator5G() {
         }
       }
 
+      let beamHue = 210; // Default Alpha
+      if (connectedTowerId != null) {
+        const allocs = elementAllocsByTowerId.get(connectedTowerId) ?? [];
+        const alloc = allocs.find((a) => Number(a.user_id) === u.id);
+        const sec = String(alloc?.sector || "alpha").toLowerCase();
+        if (sec === "alpha") beamHue = 210;
+        else if (sec === "beta") beamHue = 120;
+        else if (sec === "gamma") beamHue = 0;
+      }
+
       return {
         id: u.id,
         name: `User ${u.id}`,
         // Preserve dynamic range so bars don't disappear from aggressive rounding.
         signal: parseFloat(signal.toFixed(6)),
         connectedTowerId,
+        beamHue,
       };
     });
   },
@@ -1723,24 +1759,48 @@ export default function Simulator5G() {
       return row;
     });
 
+    const mToPxX = CANVAS_W / Math.max(1e-6, mapViewport.maxX - mapViewport.minX);
+    const mToPxY = CANVAS_H / Math.max(1e-6, mapViewport.maxY - mapViewport.minY);
+    const mToPx = (mToPxX + mToPxY) / 2;
+
     const markers = connectedUsers
       .map((u) => {
         const towerId = liveConnectedTowerByUserId.get(u.id)!;
         const tower = localTowers.find((t) => t.id === towerId)!;
-        const d = Math.max(minDist, Math.hypot(u.x - tower.x, u.y - tower.y));
+        
+        // Convert world coordinates to canvas pixels
+        const spanX = Math.max(1e-6, mapViewport.maxX - mapViewport.minX);
+        const spanY = Math.max(1e-6, mapViewport.maxY - mapViewport.minY);
+        const uxCanvas = ((u.x - mapViewport.minX) / spanX) * CANVAS_W;
+        const txCanvas = ((tower.x - mapViewport.minX) / spanX) * CANVAS_W;
+        const uyCanvas = CANVAS_H - ((u.y - mapViewport.minY) / spanY) * CANVAS_H;
+        const tyCanvas = CANVAS_H - ((tower.y - mapViewport.minY) / spanY) * CANVAS_H;
+
+        // Calculate pixel distance and convert to meters using canvas scale
+        const distPx = Math.hypot(uxCanvas - txCanvas, uyCanvas - tyCanvas);
+        const d = Math.max(minDist, distPx / mToPx);
+
         const allocs = elementAllocsByTowerId.get(towerId) ?? [];
         const alloc = allocs.find((a) => Number(a.user_id) === u.id);
         const allocFraction = alloc?.fraction ?? (1.0 / (allocs.length || 1));
+        
+        let beamHue = 210;
+        const sec = String(alloc?.sector || "alpha").toLowerCase();
+        if (sec === "alpha") beamHue = 210;
+        else if (sec === "beta") beamHue = 120;
+        else if (sec === "gamma") beamHue = 0;
+
         return {
           userId: u.id,
           towerId,
           distance: parseFloat(d.toFixed(2)),
           signal: parseFloat((allocFraction / (d * d)).toFixed(6)),
+          beamHue,
         };
       });
 
     return { curveData, markers };
-  }, [localUsers, localTowers, liveConnectedTowerByUserId, elementAllocsByTowerId, towerCoverageRadiusByTowerId]);
+  }, [localUsers, localTowers, liveConnectedTowerByUserId, elementAllocsByTowerId, towerCoverageRadiusByTowerId, mapViewport, CANVAS_W, CANVAS_H]);
 
   const panelControl = useMemo(() => (
     <div className="h-full flex flex-col">
@@ -1799,7 +1859,13 @@ export default function Simulator5G() {
         </div>
       </div>
       <div className="flex-1 min-h-0">
-        <ControlPanel params={params} onParamChange={updateParam} />
+        <ControlPanel 
+          params={{ 
+            ...params, 
+            autoSteer: localUsers.some(u => liveConnectedTowerByUserId.get(u.id) === panelTowerId) 
+          }} 
+          onParamChange={updateParam} 
+        />
       </div>
     </div>
   ), [panelTowerId, params, localTowers, addTower, removeTower]);
@@ -1971,7 +2037,7 @@ export default function Simulator5G() {
                       key={`cell-${i}`}
                       fill={
                         entry.connectedTowerId != null
-                          ? `hsl(${TOWER_COLORS[entry.connectedTowerId]?.hue ?? DEFAULT_TOWER_HUE},70%,50%)`
+                          ? `hsl(${entry.beamHue},90%,65%)`
                           : "hsl(0,0%,55%)"
                       }
                     />
@@ -1999,27 +2065,36 @@ export default function Simulator5G() {
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={distanceChart.curveData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }} isAnimationActive={false}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
-                <XAxis dataKey="distance" tick={{ fontSize: 9 }}
-                  label={{ value: "Distance (m)", position: "bottom", offset: 5, style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
+                <XAxis 
+                  dataKey="distance" 
+                  type="number"
+                  domain={['dataMin', 'dataMax']}
+                  tick={{ fontSize: 9 }}
+                  label={{ value: "Distance (m)", position: "bottom", offset: 5, style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} 
+                />
                 <YAxis tick={{ fontSize: 9 }}
                   label={{ value: "Signal", angle: -90, position: "insideLeft", style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
                 <Tooltip contentStyle={{ backgroundColor: "hsl(240,10%,15%)", border: "1px solid hsl(240,10%,22%)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
-                {localUsers.filter(u => liveConnectedTowerByUserId.has(u.id)).map((u) => (
-                  <Line
-                    key={`curve-${u.id}`}
-                    type="monotone"
-                    dataKey={`user_${u.id}`}
-                    stroke={`hsl(${USER_COLORS[u.id]?.hue ?? DEFAULT_USER_HUE},75%,58%)`}
-                    strokeWidth={2}
-                    dot={false}
-                    connectNulls={false}
-                  />
-                ))}
+                {localUsers.filter(u => liveConnectedTowerByUserId.has(u.id)).map((u) => {
+                  const m = distanceChart.markers.find(m => m.userId === u.id);
+                  const hue = m?.beamHue ?? 210;
+                  return (
+                    <Line
+                      key={`curve-${u.id}`}
+                      type="monotone"
+                      dataKey={`user_${u.id}`}
+                      stroke={`hsl(${hue},75%,58%)`}
+                      strokeWidth={2}
+                      dot={false}
+                      connectNulls={false}
+                    />
+                  );
+                })}
                 {distanceChart.markers.map((m) => (
                   <ReferenceLine
                     key={`v-line-${m.userId}`}
                     x={m.distance}
-                    stroke={`hsla(${USER_COLORS[m.userId]?.hue ?? DEFAULT_USER_HUE},80%,60%,0.4)`}
+                    stroke={`hsla(${m.beamHue},80%,60%,0.4)`}
                     strokeDasharray="4 4"
                     isAnimationActive={false}
                   />
@@ -2033,7 +2108,7 @@ export default function Simulator5G() {
                     stroke="transparent"
                     dot={{
                       r: 5,
-                      fill: `hsl(${USER_COLORS[m.userId]?.hue ?? DEFAULT_USER_HUE},85%,70%)`,
+                      fill: `hsl(${m.beamHue},85%,70%)`,
                       stroke: "hsl(0,0%,10%)",
                       strokeWidth: 1.2,
                     }}

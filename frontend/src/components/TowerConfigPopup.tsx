@@ -19,6 +19,7 @@ export interface TowerParams {
   apodization_enabled?: boolean;
   geometry?: "linear" | "curved";
   radius?: number;
+  currentSteeringAngle?: number; // actual physical angle (result)
 }
 
 interface TowerConfigPopupProps {

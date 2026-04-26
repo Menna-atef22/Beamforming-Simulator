@@ -32,6 +32,7 @@ function SliderControl({
   max,
   step,
   unit,
+  disabled = false,
   onChange,
 }: {
   label: string;
@@ -40,10 +41,11 @@ function SliderControl({
   max: number;
   step: number;
   unit?: string;
+  disabled?: boolean;
   onChange: (v: number) => void;
 }) {
   return (
-    <div className="space-y-1.5">
+    <div className={`space-y-1.5 ${disabled ? "opacity-60 cursor-not-allowed" : ""}`}>
       <div className="flex justify-between items-center">
         <Label className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
           {label}
@@ -58,8 +60,9 @@ function SliderControl({
         min={min}
         max={max}
         step={step}
+        disabled={disabled}
         onValueChange={([v]) => onChange(v)}
-        className="cursor-pointer"
+        className={disabled ? "pointer-events-none" : "cursor-pointer"}
       />
     </div>
   );
@@ -182,6 +185,7 @@ export default function ControlPanel({
         max={params.scanRangeDeg === 360 ? 360 : 90}
         step={1}
         unit="°"
+        disabled={params.autoSteer}
         onChange={(v) => onParamChange("steeringAngleDeg", v)}
       />
       <SliderControl
