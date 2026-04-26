@@ -73,9 +73,8 @@ function SliderRow({
         className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
         style={{
           accentColor: `hsl(${hue},70%,55%)`,
-          background: `linear-gradient(to right, hsl(${hue},70%,50%) 0%, hsl(${hue},70%,50%) ${
-            ((value - min) / (max - min)) * 100
-          }%, hsl(240,10%,30%) ${((value - min) / (max - min)) * 100}%, hsl(240,10%,30%) 100%)`,
+          background: `linear-gradient(to right, hsl(${hue},70%,50%) 0%, hsl(${hue},70%,50%) ${((value - min) / (max - min)) * 100
+            }%, hsl(240,10%,30%) ${((value - min) / (max - min)) * 100}%, hsl(240,10%,30%) 100%)`,
         }}
       />
     </div>
@@ -93,7 +92,7 @@ export default function TowerConfigPopup({
 }: TowerConfigPopupProps) {
   // Keep popup inside viewport — flip to left if too close to right edge
   const popupW = 220;
-  const left   = anchorPx.x + popupW > window.innerWidth - 20
+  const left = anchorPx.x + popupW > window.innerWidth - 20
     ? anchorPx.x - popupW - 8
     : anchorPx.x + 8;
 
@@ -111,9 +110,9 @@ export default function TowerConfigPopup({
       <div
         className="rounded-xl border shadow-2xl backdrop-blur-md flex flex-col gap-3 p-3"
         style={{
-          background:   `hsla(240,12%,10%,0.92)`,
-          borderColor:  `hsla(${towerHue},65%,45%,0.4)`,
-          boxShadow:    `0 0 24px hsla(${towerHue},65%,40%,0.25)`,
+          background: `hsla(240,12%,10%,0.92)`,
+          borderColor: `hsla(${towerHue},65%,45%,0.4)`,
+          boxShadow: `0 0 24px hsla(${towerHue},65%,40%,0.25)`,
         }}
       >
         {/* Header */}

@@ -39,21 +39,51 @@ const DEFAULT_USERS = [
   { id: 102, ...fromCanvasPercent(65, 40) },
 ];
 
-// ─── Unique color per tower (hue, saturation%, lightness%) ───────────────────
-// Each tower gets its own hue used for: coverage circle, beam lines, icon, label
-const TOWER_COLORS: Record<number, { hue: number; name: string }> = {
-  1: { hue: 270, name: "Violet"  }, // Tower 1 → violet/purple
-  2: { hue: 185, name: "Cyan"    }, // Tower 2 → cyan/teal
-  3: { hue:  35, name: "Amber"   }, // Tower 3 → amber/orange
-};
-const DEFAULT_TOWER_HUE = 270; // fallback if id not in palette
+// ─── Limits ───────────────────────────────────────────────────────────────────
+const MIN_TOWERS = 1;
+const MAX_TOWERS = 5;
+const MIN_USERS  = 1;
+const MAX_USERS  = 4;
 
-// ─── Unique color per user (for element-subset coloring) ─────────────────────
+// ─── Unique color per tower (hue, saturation%, lightness%) ───────────────────
+const TOWER_COLORS: Record<number, { hue: number; name: string }> = {
+  1: { hue: 270, name: "Violet" },
+  2: { hue: 185, name: "Cyan"   },
+  3: { hue:  35, name: "Amber"  },
+  4: { hue: 320, name: "Pink"   },
+  5: { hue: 160, name: "Teal"   },
+};
+const DEFAULT_TOWER_HUE = 270;
+
+// ─── Unique color per user ────────────────────────────────────────────────────
 const USER_COLORS: Record<number, { hue: number; name: string }> = {
-  101: { hue: 340, name: "Rose"    }, // User 101 → rose/pink
-  102: { hue: 150, name: "Green"   }, // User 102 → emerald green
+  101: { hue: 340, name: "Rose"    },
+  102: { hue: 150, name: "Green"   },
+  103: { hue:  45, name: "Gold"    },
+  104: { hue: 200, name: "Sky"     },
 };
 const DEFAULT_USER_HUE = 340;
+
+// ─── Default tower params factory ────────────────────────────────────────────
+const makeTowerParams = (id: number, x: number, y: number) => ({
+  id,
+  x,
+  y,
+  coverage_radius_m: 5.0,
+  num_elements: 16,
+  frequency: 28e9,
+  spacing: 0.5,
+  wavelength: 1.0,
+  steering_angle_deg: 0,
+  manual_steering_deg: 0,
+  amplitude: 1.0,
+  snr_db: 30,
+  window_type: "rectangular" as const,
+  noise_enabled: true,
+  apodization_enabled: false,
+  geometry: "linear" as const,
+  radius: 50,
+});
 
 
 const defaultParams: BeamformingParams & Record<string, any> = {
@@ -98,10 +128,9 @@ export default function Simulator5G() {
       radius: Number.isFinite(Number(defaultParams.radius)) ? Number(defaultParams.radius) : 50,
     }))
   );
-  const [selectedUserId, setSelectedUserId]   = useState<number | null>(null);
+  const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [selectedTowerId, setSelectedTowerId] = useState<number | null>(null);
   const [panelTowerId, setPanelTowerId] = useState<number>(1);
-  // Canvas-space anchor for tower popup (in viewport px)
   const [towerPopupAnchor, setTowerPopupAnchor] = useState<{ x: number; y: number } | null>(null);
   const [analysisViewMode, setAnalysisViewMode] = useState<"heatmap" | "beam">("heatmap");
 
@@ -109,6 +138,65 @@ export default function Simulator5G() {
   const [currentConnections, setCurrentConnections] = useState<Record<number, number>>({});
   const currentConnectionsRef = useRef<Record<number, number>>({});
   currentConnectionsRef.current = currentConnections;
+
+  // ─── Add / Remove towers ─────────────────────────────────────────────────────
+  const addTower = useCallback(() => {
+    setLocalTowers(prev => {
+      if (prev.length >= MAX_TOWERS) return prev;
+      // Pick an id not already used (1-5)
+      const usedIds = new Set(prev.map(t => t.id));
+      const newId = [1,2,3,4,5].find(i => !usedIds.has(i)) ?? (prev.length + 1);
+      // Spread towers evenly along the bottom band, offset by slot
+      const slot = prev.length; // 0-based index
+      const xFrac = (slot + 0.5) / MAX_TOWERS; // 0.1 … 0.9
+      const x = WORLD_MIN_X + xFrac * (WORLD_MAX_X - WORLD_MIN_X);
+      const y = fromCanvasPercent(0, 82).y;
+      return [...prev, makeTowerParams(newId, x, y)];
+    });
+  }, []);
+
+  const removeTower = useCallback(() => {
+    setLocalTowers(prev => {
+      if (prev.length <= MIN_TOWERS) return prev;
+      const removed = prev[prev.length - 1];
+      // Deselect if this tower was selected
+      setSelectedTowerId(s => s === removed.id ? null : s);
+      setTowerPopupAnchor(null);
+      setPanelTowerId(p => p === removed.id ? prev[prev.length - 2].id : p);
+      // Drop connections to this tower so users reconnect
+      setCurrentConnections(c => {
+        const next = { ...c };
+        for (const [uid, tid] of Object.entries(next)) {
+          if (Number(tid) === removed.id) delete next[Number(uid)];
+        }
+        return next;
+      });
+      return prev.slice(0, -1);
+    });
+  }, []);
+
+  // ─── Add / Remove users ──────────────────────────────────────────────────────
+  const addUser = useCallback(() => {
+    setLocalUsers(prev => {
+      if (prev.length >= MAX_USERS) return prev;
+      const usedIds = new Set(prev.map(u => u.id));
+      const newId = [101,102,103,104].find(i => !usedIds.has(i)) ?? (100 + prev.length + 1);
+      // Spawn at map centre with small random offset so they don't stack
+      const cx = (WORLD_MIN_X + WORLD_MAX_X) / 2 + (Math.random() - 0.5) * 1.5;
+      const cy = (WORLD_MIN_Y + WORLD_MAX_Y) / 2 + (Math.random() - 0.5) * 1.5;
+      return [...prev, { id: newId, x: cx, y: cy }];
+    });
+  }, []);
+
+  const removeUser = useCallback(() => {
+    setLocalUsers(prev => {
+      if (prev.length <= MIN_USERS) return prev;
+      const removed = prev[prev.length - 1];
+      setSelectedUserId(s => s === removed.id ? null : s);
+      setCurrentConnections(c => { const n = { ...c }; delete n[removed.id]; return n; });
+      return prev.slice(0, -1);
+    });
+  }, []);
 
   const [result, setResult] = useState<Simulator5GResponse | null>(null);
   const isInitialLoadRef = useRef(true);
@@ -227,7 +315,7 @@ export default function Simulator5G() {
       if (selectedUserId === null) return;
 
       // Only intercept movement keys
-      const moveKeys = ["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","w","a","s","d","W","A","S","D"];
+      const moveKeys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "w", "a", "s", "d", "W", "A", "S", "D"];
       if (!moveKeys.includes(e.key)) return;
 
       e.preventDefault(); // stop page scroll
@@ -237,9 +325,9 @@ export default function Simulator5G() {
         let nx = u.x;
         let ny = u.y;
         switch (e.key) {
-          case "ArrowUp":    case "w": case "W": ny += STEP; break;
-          case "ArrowDown":  case "s": case "S": ny -= STEP; break;
-          case "ArrowLeft":  case "a": case "A": nx -= STEP; break;
+          case "ArrowUp": case "w": case "W": ny += STEP; break;
+          case "ArrowDown": case "s": case "S": ny -= STEP; break;
+          case "ArrowLeft": case "a": case "A": nx -= STEP; break;
           case "ArrowRight": case "d": case "D": nx += STEP; break;
         }
         nx = Math.max(WORLD_MIN_X, Math.min(WORLD_MAX_X, nx));
@@ -334,11 +422,11 @@ export default function Simulator5G() {
   const fiveG = useMemo(() =>
     result?.data
       ? {
-          towers:      result.data.towers      || [],
-          users:       result.data.users       || [],
-          connectivityMap: result.data.connectivityMap || [],
-          beamPatterns: result.data.beamPatterns || [],
-        }
+        towers: result.data.towers || [],
+        users: result.data.users || [],
+        connectivityMap: result.data.connectivityMap || [],
+        beamPatterns: result.data.beamPatterns || [],
+      }
       : null,
     [result?.data]
   );
@@ -491,7 +579,7 @@ export default function Simulator5G() {
     const scaleX = CANVAS_W / rect.width;
     const scaleY = CANVAS_H / rect.height;
     const cx = (e.clientX - rect.left) * scaleX;
-    const cy = (e.clientY - rect.top)  * scaleY;
+    const cy = (e.clientY - rect.top) * scaleY;
 
     // 1. Check towers first (click radius = 18px for the triangle icon)
     let bestTowerId: number | null = null;
@@ -513,7 +601,7 @@ export default function Simulator5G() {
       const ty = toCanvasY(clickedTower.y);
       // Convert canvas-space tx,ty to viewport pixels
       const vpX = rect.left + (tx / CANVAS_W) * rect.width;
-      const vpY = rect.top  + (ty / CANVAS_H) * rect.height - 14;
+      const vpY = rect.top + (ty / CANVAS_H) * rect.height - 14;
       setTowerPopupAnchor({ x: vpX, y: vpY });
       return;
     }
@@ -797,7 +885,7 @@ export default function Simulator5G() {
           if (hasAllocations) {
             const alloc = allocs.find(a => ei >= a.element_start && ei < a.element_end);
             if (alloc) {
-              dotHue   = USER_COLORS[alloc.user_id]?.hue ?? DEFAULT_USER_HUE;
+              dotHue = USER_COLORS[alloc.user_id]?.hue ?? DEFAULT_USER_HUE;
               dotAlpha = 1.0;
             }
           }
@@ -825,7 +913,7 @@ export default function Simulator5G() {
         }
 
         // Compute per-alloc sub-array centroid for beam origin (used later in beam-line pass)
-        const subArrayCenterByUserId = new Map<number, {x: number; y:number}>();
+        const subArrayCenterByUserId = new Map<number, { x: number; y: number }>();
         if (hasAllocations) {
           for (const alloc of allocs) {
             const slice = elements.slice(alloc.element_start, alloc.element_end);
@@ -1099,76 +1187,75 @@ export default function Simulator5G() {
       80
     );
     return () => clearTimeout(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localTowers]);
 
   const initialBackendError = error && isInitialLoadRef.current ? error : null;
 
-  const userSignalData = useMemo(() =>
-    {
-      const userById = new Map<number, any>((fiveG?.users ?? []).map((u: any) => [u.id, u]));
-      const localTowerById = new Map<number, { x: number; y: number }>(
-        localTowers.map((t) => [t.id, { x: t.x, y: t.y }])
-      );
-      const signalByUserTower = new Map<string, number>();
-      const bestSignalByUser = new Map<number, number>();
+  const userSignalData = useMemo(() => {
+    const userById = new Map<number, any>((fiveG?.users ?? []).map((u: any) => [u.id, u]));
+    const localTowerById = new Map<number, { x: number; y: number }>(
+      localTowers.map((t) => [t.id, { x: t.x, y: t.y }])
+    );
+    const signalByUserTower = new Map<string, number>();
+    const bestSignalByUser = new Map<number, number>();
 
-      for (const c of (fiveG?.connectivityMap as any[] ?? [])) {
-        const userId = (c as any).userId ?? (c as any).user_id;
-        const towerId = (c as any).towerId ?? (c as any).tower_id;
-        const signal = (c as any).signalStrength ?? (c as any).signal_strength ?? 0;
-        if (typeof userId === "number" && typeof towerId === "number") {
-          const s = Number(signal) || 0;
-          signalByUserTower.set(`${userId}:${towerId}`, s);
-          const prevBest = bestSignalByUser.get(userId) ?? 0;
-          if (s > prevBest) bestSignalByUser.set(userId, s);
+    for (const c of (fiveG?.connectivityMap as any[] ?? [])) {
+      const userId = (c as any).userId ?? (c as any).user_id;
+      const towerId = (c as any).towerId ?? (c as any).tower_id;
+      const signal = (c as any).signalStrength ?? (c as any).signal_strength ?? 0;
+      if (typeof userId === "number" && typeof towerId === "number") {
+        const s = Number(signal) || 0;
+        signalByUserTower.set(`${userId}:${towerId}`, s);
+        const prevBest = bestSignalByUser.get(userId) ?? 0;
+        if (s > prevBest) bestSignalByUser.set(userId, s);
+      }
+    }
+
+    return localUsers.map((u) => {
+      const connectedTowerId = liveConnectedTowerByUserId.get(u.id) ?? null;
+      const connectedSignal = connectedTowerId != null
+        ? signalByUserTower.get(`${u.id}:${connectedTowerId}`)
+        : undefined;
+      const fallbackSignal = Number(
+        (userById.get(u.id) as any)?.signal_strength ??
+        (userById.get(u.id) as any)?.signalStrength ??
+        0
+      ) || 0;
+      const bestKnownSignal = bestSignalByUser.get(u.id) ?? fallbackSignal;
+      let signal = connectedTowerId != null
+        ? (connectedSignal ?? bestKnownSignal)
+        : 0;
+
+      // Distance-dominant proxy for robust UI behavior:
+      // when users share a tower, closer users must read stronger than farther users.
+      if (connectedTowerId != null) {
+        const tower = localTowerById.get(connectedTowerId);
+        if (tower) {
+          const d = Math.max(0.25, Math.hypot(u.x - tower.x, u.y - tower.y));
+          const allocs = elementAllocsByTowerId.get(connectedTowerId) ?? [];
+          const alloc = allocs.find((a) => Number(a.user_id) === u.id);
+          const allocFraction = alloc?.fraction ?? 1.0;
+          const distanceProxy = allocFraction / (d * d);
+
+          if (!Number.isFinite(signal) || signal <= 1e-6 || alloc != null) {
+            signal = distanceProxy;
+          } else {
+            // Keep physically computed signal, but clamp with proxy floor to avoid inversions.
+            signal = Math.max(signal, distanceProxy * 0.5);
+          }
         }
       }
 
-      return localUsers.map((u) => {
-        const connectedTowerId = liveConnectedTowerByUserId.get(u.id) ?? null;
-        const connectedSignal = connectedTowerId != null
-          ? signalByUserTower.get(`${u.id}:${connectedTowerId}`)
-          : undefined;
-        const fallbackSignal = Number(
-          (userById.get(u.id) as any)?.signal_strength ??
-          (userById.get(u.id) as any)?.signalStrength ??
-          0
-        ) || 0;
-        const bestKnownSignal = bestSignalByUser.get(u.id) ?? fallbackSignal;
-        let signal = connectedTowerId != null
-          ? (connectedSignal ?? bestKnownSignal)
-          : 0;
-
-        // Distance-dominant proxy for robust UI behavior:
-        // when users share a tower, closer users must read stronger than farther users.
-        if (connectedTowerId != null) {
-          const tower = localTowerById.get(connectedTowerId);
-          if (tower) {
-            const d = Math.max(0.25, Math.hypot(u.x - tower.x, u.y - tower.y));
-            const allocs = elementAllocsByTowerId.get(connectedTowerId) ?? [];
-            const alloc = allocs.find((a) => Number(a.user_id) === u.id);
-            const allocFraction = alloc?.fraction ?? 1.0;
-            const distanceProxy = allocFraction / (d * d);
-
-            if (!Number.isFinite(signal) || signal <= 1e-6 || alloc != null) {
-              signal = distanceProxy;
-            } else {
-              // Keep physically computed signal, but clamp with proxy floor to avoid inversions.
-              signal = Math.max(signal, distanceProxy * 0.5);
-            }
-          }
-        }
-
-        return {
-          id: u.id,
-          name: `User ${u.id}`,
-          // Preserve dynamic range so bars don't disappear from aggressive rounding.
-          signal: parseFloat(signal.toFixed(6)),
-          connectedTowerId,
-        };
-      });
-    },
+      return {
+        id: u.id,
+        name: `User ${u.id}`,
+        // Preserve dynamic range so bars don't disappear from aggressive rounding.
+        signal: parseFloat(signal.toFixed(6)),
+        connectedTowerId,
+      };
+    });
+  },
     [fiveG?.users, fiveG?.connectivityMap, localUsers, localTowers, liveConnectedTowerByUserId, elementAllocsByTowerId]
   );
 
@@ -1420,25 +1507,55 @@ export default function Simulator5G() {
   const panelControl = useMemo(() => (
     <div className="h-full flex flex-col">
       <div className="px-4 py-3 border-b border-border/50 bg-card/70">
-        <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-2">Tower Selector</div>
-        <div className="grid grid-cols-3 gap-2">
-          {[1, 2, 3].map((id) => {
-            const selected = panelTowerId === id;
-            const hue = TOWER_COLORS[id]?.hue ?? DEFAULT_TOWER_HUE;
+        {/* Tower selector header with +/- */}
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">Tower Selector</span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={removeTower}
+              disabled={localTowers.length <= MIN_TOWERS}
+              className="w-5 h-5 rounded border text-[13px] font-mono leading-none flex items-center justify-center transition-colors"
+              style={{
+                borderColor: localTowers.length <= MIN_TOWERS ? "hsla(0,0%,35%,0.4)" : "hsla(0,65%,60%,0.55)",
+                color: localTowers.length <= MIN_TOWERS ? "hsl(0,0%,40%)" : "hsl(0,70%,72%)",
+                background: localTowers.length <= MIN_TOWERS ? "hsla(0,0%,15%,0.3)" : "hsla(0,50%,25%,0.3)",
+              }}
+              title="Remove last tower"
+            >−</button>
+            <span className="text-[9px] font-mono text-muted-foreground tabular-nums w-8 text-center">
+              {localTowers.length}/{MAX_TOWERS}
+            </span>
+            <button
+              type="button"
+              onClick={addTower}
+              disabled={localTowers.length >= MAX_TOWERS}
+              className="w-5 h-5 rounded border text-[13px] font-mono leading-none flex items-center justify-center transition-colors"
+              style={{
+                borderColor: localTowers.length >= MAX_TOWERS ? "hsla(0,0%,35%,0.4)" : "hsla(140,65%,45%,0.55)",
+                color: localTowers.length >= MAX_TOWERS ? "hsl(0,0%,40%)" : "hsl(140,70%,68%)",
+                background: localTowers.length >= MAX_TOWERS ? "hsla(0,0%,15%,0.3)" : "hsla(140,50%,22%,0.3)",
+              }}
+              title="Add tower"
+            >+</button>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {localTowers.map((t) => {
+            const selected = panelTowerId === t.id;
+            const hue = TOWER_COLORS[t.id]?.hue ?? DEFAULT_TOWER_HUE;
             return (
               <button
-                key={id}
+                key={t.id}
                 type="button"
-                onClick={() => setPanelTowerId(id)}
-                className="h-8 rounded-md border text-[11px] font-mono font-semibold transition-colors"
+                onClick={() => setPanelTowerId(t.id)}
+                className="h-8 px-3 rounded-md border text-[11px] font-mono font-semibold transition-colors"
                 style={{
                   borderColor: selected ? `hsla(${hue},70%,60%,0.9)` : "hsla(240,10%,35%,0.6)",
                   backgroundColor: selected ? `hsla(${hue},70%,42%,0.35)` : "hsla(240,10%,18%,0.55)",
                   color: selected ? `hsl(${hue},80%,85%)` : "hsl(240,8%,78%)",
                 }}
-              >
-                {`T${id}`}
-              </button>
+              >{`T${t.id}`}</button>
             );
           })}
         </div>
@@ -1447,7 +1564,7 @@ export default function Simulator5G() {
         <ControlPanel params={params} onParamChange={updateParam} />
       </div>
     </div>
-  ), [panelTowerId, params]);
+  ), [panelTowerId, params, localTowers, addTower, removeTower]);
 
   return (
     <MainLayout controlPanel={panelControl}>
@@ -1460,11 +1577,44 @@ export default function Simulator5G() {
 
         {/* ── 2D Map ───────────────────────────────────────────────────── */}
         <div className="glass-panel p-3 flex flex-col">
-          <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-            5G Coverage Map — 3 Towers · 2 Users
-          </h3>
+          {/* Header row: title + add/remove controls */}
+          <div className="flex items-center justify-between mb-1">
+            <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground">
+              5G Coverage Map — {localTowers.length} Tower{localTowers.length !== 1 ? "s" : ""} · {localUsers.length} User{localUsers.length !== 1 ? "s" : ""}
+            </h3>
+            {/* +/- buttons for towers and users */}
+            <div className="flex items-center gap-2">
+              {/* Towers */}
+              <div className="flex items-center gap-1">
+                <span className="text-[8px] font-mono text-muted-foreground">T</span>
+                <button type="button" onClick={removeTower} disabled={localTowers.length <= MIN_TOWERS}
+                  className="w-5 h-5 rounded border text-[12px] font-mono leading-none flex items-center justify-center"
+                  style={{ borderColor: localTowers.length <= MIN_TOWERS ? "hsla(0,0%,30%,0.4)" : "hsla(0,65%,55%,0.6)", color: localTowers.length <= MIN_TOWERS ? "hsl(0,0%,38%)" : "hsl(0,70%,68%)", background: "hsla(0,0%,12%,0.5)" }}
+                  title="Remove tower">−</button>
+                <span className="text-[9px] font-mono text-muted-foreground tabular-nums">{localTowers.length}</span>
+                <button type="button" onClick={addTower} disabled={localTowers.length >= MAX_TOWERS}
+                  className="w-5 h-5 rounded border text-[12px] font-mono leading-none flex items-center justify-center"
+                  style={{ borderColor: localTowers.length >= MAX_TOWERS ? "hsla(0,0%,30%,0.4)" : "hsla(140,65%,42%,0.6)", color: localTowers.length >= MAX_TOWERS ? "hsl(0,0%,38%)" : "hsl(140,70%,65%)", background: "hsla(0,0%,12%,0.5)" }}
+                  title="Add tower">+</button>
+              </div>
+              <span className="text-muted-foreground text-[8px]">·</span>
+              {/* Users */}
+              <div className="flex items-center gap-1">
+                <span className="text-[8px] font-mono text-muted-foreground">U</span>
+                <button type="button" onClick={removeUser} disabled={localUsers.length <= MIN_USERS}
+                  className="w-5 h-5 rounded border text-[12px] font-mono leading-none flex items-center justify-center"
+                  style={{ borderColor: localUsers.length <= MIN_USERS ? "hsla(0,0%,30%,0.4)" : "hsla(30,65%,55%,0.6)", color: localUsers.length <= MIN_USERS ? "hsl(0,0%,38%)" : "hsl(30,80%,68%)", background: "hsla(0,0%,12%,0.5)" }}
+                  title="Remove user">−</button>
+                <span className="text-[9px] font-mono text-muted-foreground tabular-nums">{localUsers.length}</span>
+                <button type="button" onClick={addUser} disabled={localUsers.length >= MAX_USERS}
+                  className="w-5 h-5 rounded border text-[12px] font-mono leading-none flex items-center justify-center"
+                  style={{ borderColor: localUsers.length >= MAX_USERS ? "hsla(0,0%,30%,0.4)" : "hsla(200,65%,45%,0.6)", color: localUsers.length >= MAX_USERS ? "hsl(0,0%,38%)" : "hsl(200,75%,68%)", background: "hsla(0,0%,12%,0.5)" }}
+                  title="Add user">+</button>
+              </div>
+            </div>
+          </div>
 
-          {/* Keyboard hint + color legend */}
+          {/* Keyboard hint + dynamic color legend */}
           <div className="flex items-center gap-2 mb-2 flex-wrap">
             {selectedUserId !== null ? (
               <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-300 border border-yellow-500/30">
@@ -1472,37 +1622,24 @@ export default function Simulator5G() {
               </span>
             ) : (
               <span className="text-[9px] font-mono px-2 py-0.5 rounded-full bg-white/5 text-muted-foreground border border-white/10">
-                Click a user (●) to select, then use W/A/S/D or arrow keys to move
+                Click a user (●) to select · W/A/S/D or arrows to move
               </span>
             )}
-
-            {/* Per-tower color swatches */}
-            <div className="flex items-center gap-1.5 ml-auto">
-              {[
-                { id: 1, hue: 270, name: "T1 · Violet" },
-                { id: 2, hue: 185, name: "T2 · Cyan"   },
-                { id: 3, hue:  35, name: "T3 · Amber"  },
-              ].map(({ id, hue, name }) => (
-                <span
-                  key={id}
-                  className="flex items-center gap-1 text-[8px] font-mono px-1.5 py-0.5 rounded border"
-                  style={{
-                    color:            `hsl(${hue},70%,80%)`,
-                    borderColor:      `hsla(${hue},65%,55%,0.5)`,
-                    backgroundColor:  `hsla(${hue},70%,30%,0.2)`,
-                  }}
-                >
-                  <span
-                    className="inline-block rounded-full border"
-                    style={{
-                      width: 8, height: 8,
-                      backgroundColor: `hsl(${hue},68%,52%)`,
-                      borderColor:     `hsl(${hue},70%,75%)`,
-                    }}
-                  />
-                  {name}
-                </span>
-              ))}
+            {/* Dynamic tower color swatches */}
+            <div className="flex items-center gap-1.5 ml-auto flex-wrap">
+              {localTowers.map(t => {
+                const hue = TOWER_COLORS[t.id]?.hue ?? DEFAULT_TOWER_HUE;
+                const name = TOWER_COLORS[t.id]?.name ?? `T${t.id}`;
+                return (
+                  <span key={t.id}
+                    className="flex items-center gap-1 text-[8px] font-mono px-1.5 py-0.5 rounded border"
+                    style={{ color: `hsl(${hue},70%,80%)`, borderColor: `hsla(${hue},65%,55%,0.5)`, backgroundColor: `hsla(${hue},70%,30%,0.2)` }}
+                  >
+                    <span className="inline-block rounded-full border" style={{ width: 8, height: 8, backgroundColor: `hsl(${hue},68%,52%)`, borderColor: `hsl(${hue},70%,75%)` }} />
+                    {`T${t.id} · ${name}`}
+                  </span>
+                );
+              })}
             </div>
           </div>
 
@@ -1511,15 +1648,14 @@ export default function Simulator5G() {
             <canvas
               ref={canvasRef}
               onClick={handleCanvasClick}
-              className={`simulator-canvas absolute inset-0 w-full h-full rounded-lg cursor-pointer ${
-                isInitialLoadRef.current ? "loading" : "ready"
-              }`}
+              className={`simulator-canvas absolute inset-0 w-full h-full rounded-lg cursor-pointer ${isInitialLoadRef.current ? "loading" : "ready"
+                }`}
               style={{
                 outline: selectedTowerId !== null
                   ? `1px solid hsla(${TOWER_COLORS[selectedTowerId]?.hue ?? 270},70%,55%,0.55)`
                   : selectedUserId !== null
-                  ? "1px solid hsla(45,80%,55%,0.4)"
-                  : "none"
+                    ? "1px solid hsla(45,80%,55%,0.4)"
+                    : "none"
               }}
             />
             {isInitialLoadRef.current && (
@@ -1674,8 +1810,8 @@ export default function Simulator5G() {
                 {activeBeamSeries.length > 0 ? (
                   <BeamPlot
                     beamPattern={{
-                      angles:       activeBeamSeries[0].angles,
-                      magnitudes:   activeBeamSeries[0].magnitudes,
+                      angles: activeBeamSeries[0].angles,
+                      magnitudes: activeBeamSeries[0].magnitudes,
                       magnitudesDb: activeBeamSeries[0].magnitudesDb ?? activeBeamSeries[0].magnitudes.map(
                         m => 20 * Math.log10(Math.max(m, 1e-6))
                       ),
