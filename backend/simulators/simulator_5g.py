@@ -41,6 +41,8 @@ class Tower:
     snr_db: Optional[float] = None            # dB
     window_type: Optional[str] = None         # e.g. "rectangular", "hamming"
     apodization_enabled: Optional[bool] = None
+    geometry: Optional[str] = None            # "linear" | "curved"
+    radius: Optional[float] = None            # curvature radius in wavelengths
 
 
 @dataclass
@@ -357,6 +359,8 @@ class Simulator5G(BeamformingEngine):
         snr = tower.snr_db if tower.snr_db is not None else self.noise.snr_db
         win = tower.window_type if tower.window_type is not None else self.window.window_type
         apod = tower.apodization_enabled if tower.apodization_enabled is not None else False
+        geom = tower.geometry if tower.geometry is not None else self.array.geometry
+        rad = tower.radius if tower.radius is not None else self.array.radius
         return {
             "num_elements": int(n_elem),
             "spacing": float(spacing),
@@ -365,6 +369,8 @@ class Simulator5G(BeamformingEngine):
             "snr_db": float(snr),
             "window_type": str(win),
             "apodization_enabled": bool(apod),
+            "geometry": str(geom),
+            "radius": float(rad),
         }
 
     @staticmethod
@@ -762,6 +768,8 @@ class Simulator5G(BeamformingEngine):
             amp     = float(eff["amplitude"])
             win     = str(eff["window_type"])
             apod    = bool(eff["apodization_enabled"])
+            geom    = str(eff["geometry"])
+            radius  = float(eff["radius"])
 
             overriding = (
                 n_elem != default_array.num_elements
@@ -770,13 +778,20 @@ class Simulator5G(BeamformingEngine):
                 or abs(amp - default_array.amplitude) > 1e-12
                 or win != default_window.window_type
                 or apod != (default_window.window_type != "rectangular")
+                or geom != default_array.geometry
+                or abs(radius - default_array.radius) > 1e-12
             )
 
             if overriding:
-                self.array         = ArrayModel(n_elem, default_array.spacing, freq,
-                                               amp, self.speed_of_light)
-                # spacing override
-                self.array.spacing = spacing
+                self.array         = ArrayModel(
+                    n_elem,
+                    spacing,
+                    freq,
+                    amp,
+                    self.speed_of_light,
+                    geometry=geom if geom in ("linear", "curved") else "linear",
+                    radius=max(1e-6, radius),
+                )
                 # amplitude & frequency override
                 self.signal.frequency = freq
                 self.signal.amplitude = amp

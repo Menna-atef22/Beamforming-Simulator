@@ -350,9 +350,14 @@ class BeamformingEngine:
                 steering_angle_rad = math.radians(-steer)
                 
                 # phase_n = +2π * (x_n*sin(theta) + y_n*cos(theta)) / λ  (positive phase advance)
-                steering_phase = 2.0 * math.pi * (
-                    elem_x * math.sin(steering_angle_rad) + elem_y * math.cos(steering_angle_rad)
-                ) / self.array.wavelength
+                if self.array.geometry == "curved":
+                    steering_phase = 2.0 * math.pi * (
+                        elem_x * math.cos(steering_angle_rad) + elem_y * math.sin(steering_angle_rad)
+                    ) / self.array.wavelength
+                else:
+                    steering_phase = 2.0 * math.pi * (
+                        elem_x * math.sin(steering_angle_rad) + elem_y * math.cos(steering_angle_rad)
+                    ) / self.array.wavelength
                 
                 # Propagation phase
                 propagation_phase = self.array.wave_number * distance

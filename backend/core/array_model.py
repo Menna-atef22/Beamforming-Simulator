@@ -156,10 +156,14 @@ class ArrayModel:
         steering_vector = []
         
         for elem in self.elements:
-            # phase_n = -2π * (x_n*sin(theta) + y_n*cos(theta)) / λ
-            steering_phase = -2.0 * math.pi * (
-                elem.x * math.sin(angle_rad) + elem.y * math.cos(angle_rad)
-            ) / self.wavelength
+            if self.geometry == "curved":
+                steering_phase = 2.0 * math.pi * (
+                    elem.x * math.cos(angle_rad) + elem.y * math.sin(angle_rad)
+                ) / self.wavelength
+            else:
+                steering_phase = -2.0 * math.pi * (
+                    elem.x * math.sin(angle_rad) + elem.y * math.cos(angle_rad)
+                ) / self.wavelength
             
             # Steering vector component: exp(j * phase_n)
             sv_component = complex(
@@ -210,17 +214,36 @@ class ArrayModel:
             imag_sum = 0.0
             
             for n, elem in enumerate(self.elements):
-                # phase(θ) = -2π * (x_n*sin(θ) + y_n*cos(θ)) / λ
-                obs_phase = -2.0 * math.pi * (
-                    elem.x * math.sin(angle_rad) + elem.y * math.cos(angle_rad)
-                ) / self.wavelength
-                steer_phase = -2.0 * math.pi * (
-                    elem.x * math.sin(steer_rad) + elem.y * math.cos(steer_rad)
-                ) / self.wavelength
+                if self.geometry == "curved":
+                    obs_phase = 2.0 * math.pi * (
+                        elem.x * math.cos(angle_rad) + elem.y * math.sin(angle_rad)
+                    ) / self.wavelength
+                    steer_phase = 2.0 * math.pi * (
+                        elem.x * math.cos(steer_rad) + elem.y * math.sin(steer_rad)
+                    ) / self.wavelength
+                else:
+                    obs_phase = -2.0 * math.pi * (
+                        elem.x * math.sin(angle_rad) + elem.y * math.cos(angle_rad)
+                    ) / self.wavelength
+                    steer_phase = -2.0 * math.pi * (
+                        elem.x * math.sin(steer_rad) + elem.y * math.cos(steer_rad)
+                    ) / self.wavelength
+                
                 phase = obs_phase - steer_phase
                 
+                # Element factor (suppress back lobe for curved arrays)
+                elem_factor = 1.0
+                if self.geometry == "curved":
+                    # Facing angle is alpha_n, relative to broadside (0)
+                    center = (self.num_elements - 1) / 2.0
+                    alpha_n = ((n - center) * self.spacing * self.wavelength) / (self.radius * self.wavelength)
+                    # angle_diff = angle_rad - alpha_n
+                    angle_diff = angle_rad - alpha_n
+                    # Apply cosine element factor, 0 if behind element
+                    elem_factor = max(0.0, math.cos(angle_diff))
+
                 # Weighted amplitude and phase
-                w = weights[n]
+                w = weights[n] * elem_factor
                 real_sum += w * math.cos(phase)
                 imag_sum += w * math.sin(phase)
             
@@ -271,15 +294,30 @@ class ArrayModel:
             for n, (elem, steer_deg) in enumerate(zip(self.elements, steering_angles_deg)):
                 steer_rad = math.radians(steer_deg)
                 
-                obs_phase = -2.0 * math.pi * (
-                    elem.x * math.sin(angle_rad) + elem.y * math.cos(angle_rad)
-                ) / self.wavelength
-                steer_phase = -2.0 * math.pi * (
-                    elem.x * math.sin(steer_rad) + elem.y * math.cos(steer_rad)
-                ) / self.wavelength
+                if self.geometry == "curved":
+                    obs_phase = 2.0 * math.pi * (
+                        elem.x * math.cos(angle_rad) + elem.y * math.sin(angle_rad)
+                    ) / self.wavelength
+                    steer_phase = 2.0 * math.pi * (
+                        elem.x * math.cos(steer_rad) + elem.y * math.sin(steer_rad)
+                    ) / self.wavelength
+                else:
+                    obs_phase = -2.0 * math.pi * (
+                        elem.x * math.sin(angle_rad) + elem.y * math.cos(angle_rad)
+                    ) / self.wavelength
+                    steer_phase = -2.0 * math.pi * (
+                        elem.x * math.sin(steer_rad) + elem.y * math.cos(steer_rad)
+                    ) / self.wavelength
                 
                 phase = obs_phase - steer_phase
-                w = weights[n]
+                
+                elem_factor = 1.0
+                if self.geometry == "curved":
+                    center = (self.num_elements - 1) / 2.0
+                    alpha_n = ((n - center) * self.spacing * self.wavelength) / (self.radius * self.wavelength)
+                    elem_factor = max(0.0, math.cos(angle_rad - alpha_n))
+
+                w = weights[n] * elem_factor
                 real_sum += w * math.cos(phase)
                 imag_sum += w * math.sin(phase)
             

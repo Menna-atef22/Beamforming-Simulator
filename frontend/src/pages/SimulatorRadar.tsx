@@ -140,21 +140,24 @@ function computeAF_Curved(
     const elemAngle = -arcHalfSpan + (i / (N - 1)) * 2 * arcHalfSpan;
     // Element x,y position (in wavelengths)
     const ex = radiusOverLambda * Math.sin(elemAngle);
-    const ey = radiusOverLambda * (Math.cos(elemAngle) - 1); // offset from centre
+    const ey = radiusOverLambda * (1 - Math.cos(elemAngle));
 
-    // Phase = k * (x*sin(theta) + y*cos(theta)) — 2D phase contribution
+    // Curved steering uses physical element position projection:
+    // phi_n = k * (x*cos(theta) + y*sin(theta))
     const k = 2 * Math.PI;
     const elemPhase =
-      k * (ex * Math.sin(thetaObsRad) + ey * Math.cos(thetaObsRad));
+      k * (ex * Math.cos(thetaObsRad) + ey * Math.sin(thetaObsRad));
 
     // Steering phase: phase delay to steer main lobe to steeringRad
     const steerPhase =
-      k * (ex * Math.sin(steeringRad) + ey * Math.cos(steeringRad));
+      k * (ex * Math.cos(steeringRad) + ey * Math.sin(steeringRad));
 
     const wi = weights[i] ?? 1 / N;
+    // Front-only element directivity for curved geometry.
+    const elemFactor = Math.max(0, Math.cos(thetaObsRad - elemAngle));
     const totalPhase = elemPhase - steerPhase;
-    re += wi * Math.cos(totalPhase);
-    im += wi * Math.sin(totalPhase);
+    re += wi * elemFactor * Math.cos(totalPhase);
+    im += wi * elemFactor * Math.sin(totalPhase);
   }
   return Math.sqrt(re * re + im * im);
 }
@@ -1085,6 +1088,7 @@ export default function SimulatorRadar() {
       steerPhaseRad: number;
       phaseColorRad: number;
       phaseCycles: number;
+      localFacingAngle: number;
     }> = [];
 
     // Arrange all elements as a centered circular ring.
@@ -1110,6 +1114,7 @@ export default function SimulatorRadar() {
         steerPhaseRad,
         phaseColorRad,
         phaseCycles,
+        localFacingAngle: a,
       });
     }
 
@@ -1130,12 +1135,13 @@ export default function SimulatorRadar() {
       const waveRateHz = 1.2 + Math.min(2.1, scanSpeed * 0.2);
       const ringCount = 3;
       const maxWaveRadius = radius * 0.95;
-      const arcStart = beamDirRad - Math.PI / 2;
-      const arcEnd = beamDirRad + Math.PI / 2;
 
       ctx.save();
       ctx.globalCompositeOperation = "lighter";
       for (const em of elementEmitters) {
+        // Each element emits forward relative to its own local facing direction.
+        const elementArcStart = em.localFacingAngle - Math.PI / 2;
+        const elementArcEnd = em.localFacingAngle + Math.PI / 2;
         const emitterAlphaBase = Math.min(0.48, 0.12 + em.weight * 1.8);
         for (let ring = 0; ring < ringCount; ring++) {
           const phase = nowS * waveRateHz + em.phaseCycles - ring / ringCount;
@@ -1147,7 +1153,7 @@ export default function SimulatorRadar() {
           ctx.strokeStyle = `hsla(272,88%,74%,${alpha})`;
           ctx.lineWidth = 0.55 + em.weight * (1.25 - wrapped * 0.45);
           ctx.beginPath();
-          ctx.arc(em.x, em.y, pulseRadius, arcStart, arcEnd);
+          ctx.arc(em.x, em.y, pulseRadius, elementArcStart, elementArcEnd);
           ctx.stroke();
         }
       }
@@ -1573,17 +1579,29 @@ export default function SimulatorRadar() {
     const radiusOverLambda = Math.max(0.5, Number(params.radius ?? 5));
     const ringRadiusMeters = radiusOverLambda * wavelength;
 
-    const elementEmitters: Array<{ x: number; y: number; amp: number; phase: number; k: number }> = [];
+    const elementEmitters: Array<{ x: number; y: number; amp: number; phase: number; k: number; facingAngle: number; isCurved: boolean }> = [];
 
     if (geometry === "curved") {
+      const arcLength = spacingMeters * (nElem - 1);
+      const totalSweep = arcLength / Math.max(1e-6, ringRadiusMeters);
+      const a0 = -totalSweep / 2;
       for (let i = 0; i < nElem; i++) {
-        const a = (i / nElem) * 2 * Math.PI;
-        const ex = ringRadiusMeters * Math.cos(a);
-        const ey = ringRadiusMeters * Math.sin(a);
+        const t = nElem === 1 ? 0 : i / (nElem - 1);
+        const alpha_n = a0 + t * totalSweep;
+        const ex = ringRadiusMeters * Math.sin(alpha_n);
+        const ey = ringRadiusMeters * (1 - Math.cos(alpha_n));
         const steerPhase = kWave * (ex * Math.cos(beamDirRad) + ey * Math.sin(beamDirRad));
         const phase = -steerPhase;
         const elemAmp = amplitude * ((weights[i] ?? 1) / wNorm);
-        elementEmitters.push({ x: ex, y: ey, amp: elemAmp, phase, k: kWave });
+        elementEmitters.push({
+          x: ex,
+          y: ey,
+          amp: elemAmp,
+          phase,
+          k: kWave,
+          facingAngle: alpha_n,
+          isCurved: true,
+        });
       }
     } else {
       const centerOffset = (nElem - 1) / 2;
@@ -1594,7 +1612,15 @@ export default function SimulatorRadar() {
         const steerPhase = kWave * (ex * Math.cos(beamDirRad) + ey * Math.sin(beamDirRad));
         const phase = -steerPhase;
         const elemAmp = amplitude * ((weights[i] ?? 1) / wNorm);
-        elementEmitters.push({ x: ex, y: ey, amp: elemAmp, phase, k: kWave });
+        elementEmitters.push({
+          x: ex,
+          y: ey,
+          amp: elemAmp,
+          phase,
+          k: kWave,
+          facingAngle: beamDirRad,
+          isCurved: false,
+        });
       }
     }
 
@@ -1615,8 +1641,13 @@ export default function SimulatorRadar() {
         for (const em of elementEmitters) {
           // Array Factor contribution in direction theta including steering phase
           const phase = (em.k * (em.x * Math.cos(theta) + em.y * Math.sin(theta))) + em.phase;
-          real += em.amp * Math.cos(phase);
-          imag += em.amp * Math.sin(phase);
+          let elemFactor = 1.0;
+          if (em.isCurved) {
+            // Suppress rear radiation for curved elements.
+            elemFactor = Math.max(0, Math.cos(theta - em.facingAngle));
+          }
+          real += em.amp * elemFactor * Math.cos(phase);
+          imag += em.amp * elemFactor * Math.sin(phase);
         }
 
         const AF = Math.sqrt(real * real + imag * imag) / (amplitude || 1);

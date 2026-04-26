@@ -171,6 +171,8 @@ class SimulationService:
                     t_ap  = t.get("apodization_enabled") if is_dict else getattr(t, "apodization_enabled", None)
                     t_sa  = t.get("steering_angle_deg") if is_dict else getattr(t, "steering_angle_deg", None)
                     t_r   = t.get("coverage_radius_m") if is_dict else getattr(t, "coverage_radius_m", None)
+                    t_g   = t.get("geometry")          if is_dict else getattr(t, "geometry", None)
+                    t_rad = t.get("radius")            if is_dict else getattr(t, "radius", None)
                     simulator.add_tower(tower_id=tid, x=tx, y=ty)
                     # Apply per-tower overrides onto the just-added Tower object
                     added = simulator.towers[-1]
@@ -183,6 +185,8 @@ class SimulationService:
                     if t_ap is not None:     added.apodization_enabled = bool(t_ap)
                     if t_sa is not None:     added.steering_angle_deg = float(t_sa)
                     if t_r is not None:      added.coverage_radius_m = float(t_r)
+                    if t_g is not None:      added.geometry = str(t_g)
+                    if t_rad is not None:    added.radius = float(t_rad)
 
             
             result = simulator.run(

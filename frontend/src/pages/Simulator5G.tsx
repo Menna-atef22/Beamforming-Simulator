@@ -781,20 +781,38 @@ export default function Simulator5G() {
       steeringDeg: number,
       elemCount: number,
       spacingOverLambda: number,
-      weights: number[]
+      weights: number[],
+      isCurved: boolean = false,
+      curvatureRadiusLambda: number = 1.4
     ) => {
       const th = (thetaDeg * Math.PI) / 180;
       const th0 = (steeringDeg * Math.PI) / 180;
-      const d = spacingOverLambda;
       const center = (elemCount - 1) / 2;
-      const psi = 2 * Math.PI * d * (Math.sin(th) - Math.sin(th0));
 
       let re = 0;
       let im = 0;
       let wSum = 0;
       for (let n = 0; n < elemCount; n++) {
-        const w = weights[n] ?? 1;
-        const phase = psi * (n - center);
+        let w = weights[n] ?? 1;
+        let phase = 0;
+        
+        if (isCurved) {
+          const alpha_n = ((n - center) * spacingOverLambda) / curvatureRadiusLambda;
+          const x_n = curvatureRadiusLambda * Math.sin(alpha_n);
+          const y_n = curvatureRadiusLambda * (1.0 - Math.cos(alpha_n));
+          
+          const obsPhase = 2 * Math.PI * (x_n * Math.cos(th) + y_n * Math.sin(th));
+          const steerPhase = 2 * Math.PI * (x_n * Math.cos(th0) + y_n * Math.sin(th0));
+          phase = obsPhase - steerPhase;
+          
+          const elemFactor = Math.max(0, Math.cos(th - alpha_n));
+          w *= elemFactor;
+        } else {
+          const d = spacingOverLambda;
+          const psi = 2 * Math.PI * d * (Math.sin(th) - Math.sin(th0));
+          phase = psi * (n - center);
+        }
+
         re += w * Math.cos(phase);
         im += w * Math.sin(phase);
         wSum += Math.abs(w);
@@ -920,6 +938,7 @@ export default function Simulator5G() {
             elements.push({
               x: centerX + arcRadius * Math.sin(a),
               y: centerY - arcRadius * Math.cos(a),
+              facing: a,
             });
           }
 
@@ -973,6 +992,7 @@ export default function Simulator5G() {
             elements.push({
               x: tx + axisX * offset,
               y: baseY + axisY * offset,
+              facing: Math.atan2(beamDirX, -beamDirY),
             });
           }
 
@@ -1005,10 +1025,14 @@ export default function Simulator5G() {
             }
           }
 
-          ctx.fillStyle = `hsla(${dotHue},85%,72%,${dotAlpha})`;
+          // Draw wave arc representing the element, perpendicular to its facing direction
+          const arcSpread = 0.85; // radians (how wide the wave is)
+          const canvasFacing = (e as any).facing - Math.PI / 2; // Convert 0=Up to canvas standard 0=Right
+          ctx.strokeStyle = `hsla(${dotHue},85%,72%,${dotAlpha})`;
+          ctx.lineWidth = 1.6;
           ctx.beginPath();
-          ctx.arc(e.x, e.y, hasAllocations ? 2.5 : 2.1, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.arc(e.x, e.y, hasAllocations ? 3.5 : 2.8, canvasFacing - arcSpread, canvasFacing + arcSpread);
+          ctx.stroke();
 
           // Draw a faint separator line between sub-array groups
           if (hasAllocations && allocs.some(a => a.element_start === ei && ei > 0)) {
@@ -1161,11 +1185,14 @@ export default function Simulator5G() {
           const towerWindowType = String((tower as any).window_type ?? "rectangular");
           const towerApodizationEnabled = Boolean((tower as any).apodization_enabled ?? false);
           const weights = buildWindowWeights(elemN, towerWindowType, towerApodizationEnabled);
+          
+          const isCurved = ((tower as any).geometry ?? "linear") === "curved";
+          const curvatureInput = Number((tower as any).radius ?? 1.4);
 
           const points: Array<{ x: number; y: number }> = [];
           const baseLobeRadiusPx = 0;
           for (const rel of lobeAngles) {
-            const af = computeArrayFactorNorm(rel, 0, elemN, towerSpacingLambda, weights);
+            const af = computeArrayFactorNorm(rel, 0, elemN, towerSpacingLambda, weights, isCurved, curvatureInput);
             const r = baseLobeRadiusPx + lobeMaxRadiusPx * Math.pow(af, 0.92);
             const a = (rel * Math.PI) / 180;
             points.push({ x: Math.sin(a) * r, y: -Math.cos(a) * r });
@@ -1236,10 +1263,13 @@ export default function Simulator5G() {
           const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
           const weights = buildWindowWeights(elemN, "rectangular", false);
 
+          const isCurved = ((tower as any).geometry ?? "linear") === "curved";
+          const curvatureInput = Number((tower as any).radius ?? 1.4);
+
           const points: Array<{ x: number; y: number }> = [];
           const baseLobeRadiusPx = 0;
           for (const rel of lobeAngles) {
-            const af = computeArrayFactorNorm(rel, 0, elemN, towerSpacingLambda, weights);
+            const af = computeArrayFactorNorm(rel, 0, elemN, towerSpacingLambda, weights, isCurved, curvatureInput);
             const r = baseLobeRadiusPx + lobeMaxRadiusPx * Math.pow(af, 0.92);
             const a = (rel * Math.PI) / 180;
             points.push({ x: Math.sin(a) * r, y: -Math.cos(a) * r });
@@ -1574,7 +1604,15 @@ export default function Simulator5G() {
       };
     }
 
-    const elementEmitters: Array<{ x: number; y: number; amp: number; phase: number; k: number }> = [];
+    const elementEmitters: Array<{
+      x: number;
+      y: number;
+      amp: number;
+      phase: number;
+      k: number;
+      facingAngle: number;
+      isCurved: boolean;
+    }> = [];
 
     for (const tower of participatingTowers) {
       const nElem = Math.max(2, Math.min(64, Math.round(Number((tower as any).num_elements ?? 16))));
@@ -1616,11 +1654,36 @@ export default function Simulator5G() {
       }
       const axisX = -beamDirY;
       const axisY = beamDirX;
+      const beamAxisAngle = Math.atan2(beamDirY, beamDirX);
+
+      const isCurved = ((tower as any).geometry ?? "linear") === "curved";
+      const curvatureRadiusMeters = Number((tower as any).radius ?? 1.4) * wavelength;
+      const arcLength = spacingMeters * (nElem - 1);
+      const totalSweep = arcLength / Math.max(1e-6, curvatureRadiusMeters);
+      const a0 = -totalSweep / 2;
 
       for (let i = 0; i < nElem; i++) {
-        const offset = (i - centerOffset) * spacingMeters;
-        const ex = tower.x + axisX * offset;
-        const ey = tower.y + axisY * offset;
+        const t = nElem === 1 ? 0 : i / (nElem - 1);
+        const alpha_n = a0 + t * totalSweep;
+        let localX = 0; // lateral axis (array tangent)
+        let localY = 0; // forward axis (beam direction)
+        let ex = tower.x;
+        let ey = tower.y;
+        
+        if (isCurved) {
+          // Physical curved coordinates relative to tower
+          localX = curvatureRadiusMeters * Math.sin(alpha_n);
+          localY = curvatureRadiusMeters * (1.0 - Math.cos(alpha_n));
+          
+          // Rotate local (lateral, forward) coordinates into world space.
+          ex = tower.x + localX * axisX + localY * beamDirX;
+          ey = tower.y + localX * axisY + localY * beamDirY;
+        } else {
+          localX = (i - centerOffset) * spacingMeters;
+          localY = 0;
+          ex = tower.x + axisX * localX;
+          ey = tower.y + axisY * localX;
+        }
 
         let steerX = beamDirX;
         let steerY = beamDirY;
@@ -1638,10 +1701,14 @@ export default function Simulator5G() {
           }
         }
 
-        // Simple steering phase term for each element against its selected beam direction.
-        const phase = -kWave * (ex * steerX + ey * steerY);
+        // Steering phase from local element position projection:
+        // phi_n = -k * (x_n*u_lateral + y_n*u_forward)
+        const steerLateral = steerX * axisX + steerY * axisY;
+        const steerForward = steerX * beamDirX + steerY * beamDirY;
+        const phase = -kWave * (localX * steerLateral + localY * steerForward);
+        const facingAngle = isCurved ? (beamAxisAngle + alpha_n) : beamAxisAngle;
         const elemAmp = amplitude * ((weights[i] ?? 1) / wNorm);
-        elementEmitters.push({ x: ex, y: ey, amp: elemAmp, phase, k: kWave });
+        elementEmitters.push({ x: ex, y: ey, amp: elemAmp, phase, k: kWave, facingAngle, isCurved: ((tower as any).geometry ?? "linear") === "curved" });
       }
     }
 
@@ -1656,9 +1723,18 @@ export default function Simulator5G() {
         let real = 0;
         let imag = 0;
         for (const em of elementEmitters) {
-          const r = Math.max(kEpsilon, Math.hypot(x - em.x, y - em.y));
+          const dx = x - em.x;
+          const dy = y - em.y;
+          const r = Math.max(kEpsilon, Math.hypot(dx, dy));
           const phase = (em.k * r) + em.phase;
-          const a = em.amp / Math.sqrt(r);
+          
+          let elemFactor = 1.0;
+          if (em.isCurved) {
+             const angleToPixel = Math.atan2(dy, dx);
+             elemFactor = Math.max(0, Math.cos(angleToPixel - em.facingAngle));
+          }
+          
+          const a = (em.amp * elemFactor) / Math.sqrt(r);
           real += a * Math.cos(phase);
           imag += a * Math.sin(phase);
         }

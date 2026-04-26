@@ -137,10 +137,14 @@ class InterferenceMap:
                     if distance < 1e-6:
                         continue
                     
-                    # phase_n = +2π * (x_n*sin(theta) + y_n*cos(theta)) / λ  (positive phase advance)
-                    steering_phase = 2.0 * math.pi * (
-                        elem_x * math.sin(steering_angle_rad) + elem_y * math.cos(steering_angle_rad)
-                    ) / self.array.wavelength
+                    if self.array.geometry == "curved":
+                        steering_phase = 2.0 * math.pi * (
+                            elem_x * math.cos(steering_angle_rad) + elem_y * math.sin(steering_angle_rad)
+                        ) / self.array.wavelength
+                    else:
+                        steering_phase = 2.0 * math.pi * (
+                            elem_x * math.sin(steering_angle_rad) + elem_y * math.cos(steering_angle_rad)
+                        ) / self.array.wavelength
                     
                     # Propagation phase: k * distance
                     propagation_phase = self.array.wave_number * distance
@@ -150,7 +154,16 @@ class InterferenceMap:
                     
                     # Amplitude includes: element weight, apodization, path loss (1/r)
                     # Normalize by total_weight to keep values comparable when N grows
-                    element_amplitude = (weights[n] * self.signal.amplitude / math.sqrt(distance)) / total_weight
+                    elem_factor = 1.0
+                    if self.array.geometry == "curved":
+                        # Angle to the pixel from the element
+                        angle_to_pixel = math.atan2(py - elem_y, px - elem_x)
+                        # Element facing angle relative to broadside
+                        center = (self.array.num_elements - 1) / 2.0
+                        alpha_n = ((n - center) * self.array.spacing * self.array.wavelength) / (self.array.radius * self.array.wavelength)
+                        elem_factor = max(0.0, math.cos(angle_to_pixel - alpha_n))
+                        
+                    element_amplitude = (weights[n] * elem_factor * self.signal.amplitude / math.sqrt(distance)) / total_weight
                     
                     # Complex field contribution from this element
                     real_sum += element_amplitude * math.cos(total_phase)
