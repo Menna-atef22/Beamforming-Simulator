@@ -189,6 +189,16 @@ export default function ControlPanel({
         onChange={(v) => onParamChange("amplitude", v)}
       />
 
+      <SliderControl
+        label="Profile Depth"
+        value={params.profileDepth ?? 2.0}
+        min={0.1}
+        max={100}
+        step={0.1}
+        unit="m"
+        onChange={(v) => onParamChange("profileDepth", v)}
+      />
+
       {/* Signal Quality */}
       <SectionHeader title="Signal Quality" />
       <SliderControl

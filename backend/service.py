@@ -6,7 +6,13 @@ import math
 
 from .core import BeamformingEngine, ArrayModel, SignalModel, NoiseModel, WindowFunction
 from .simulators import Simulator5G, SimulatorRadar, SimulatorUltrasound
-from .serializers import serialize_beamforming_result, serialize_5g_result, serialize_radar_result, serialize_ultrasound_result
+from .serializers import (
+    serialize_beamforming_result,
+    serialize_array_element,
+    serialize_5g_result,
+    serialize_radar_result,
+    serialize_ultrasound_result,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,15 +76,27 @@ class SimulationService:
             window = WindowFunction(window_type, num_elements)
             
             engine = BeamformingEngine(array, signal, noise, window)
+            # Allow optional profile depth override (meters)
+            profile_depth = params_dict.get("profile_depth") if params_dict.get("profile_depth") is not None else params_dict.get("profileDepth")
+
             result = engine.run_simulation(
                 steering_angle_deg=steering_angle_deg,
                 enable_noise=enable_noise,
-                grid_size=grid_size
+                grid_size=grid_size,
+                profile_depth=profile_depth
             )
-            
+
+            # Build serialized payload and include element positions for frontend overlays
+            payload = serialize_beamforming_result(result)
+            try:
+                payload["array"] = [serialize_array_element(e) for e in array.elements]
+            except Exception:
+                # Fallback: empty array if serialization fails
+                payload["array"] = []
+
             return {
                 "success": True,
-                "data": serialize_beamforming_result(result)
+                "data": payload
             }
         except Exception as e:
             logger.error(f"Beamforming simulation failed: {str(e)}", exc_info=True)

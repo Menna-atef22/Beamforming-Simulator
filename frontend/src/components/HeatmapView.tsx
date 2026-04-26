@@ -1,10 +1,15 @@
-import { InterferenceMapData } from "@/types/beamforming";
+import { InterferenceMapData, ArrayElement } from "@/types/beamforming";
 import { useRef, useEffect, useState } from "react";
 import "./HeatmapView.css";
 
 interface HeatmapViewProps {
   data: InterferenceMapData;
   title?: string;
+}
+
+interface HeatmapViewPropsExtended extends HeatmapViewProps {
+  array?: ArrayElement[];
+  profileDepth?: number;
 }
 
 function valueToColor(value: number, max: number): [number, number, number] {
@@ -38,7 +43,7 @@ function valueToColor(value: number, max: number): [number, number, number] {
   }
 }
 
-export default function HeatmapView({ data, title = "Interference Heatmap" }: HeatmapViewProps) {
+export default function HeatmapView({ data, title = "Interference Heatmap", array, profileDepth }: HeatmapViewPropsExtended) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 320, height: 320 });
@@ -120,6 +125,63 @@ export default function HeatmapView({ data, title = "Interference Heatmap" }: He
       size.width,
       size.height
     );
+
+    // Overlay array element markers and profile depth dashed line
+    try {
+      const xRange = data.xRange || [];
+      const yRange = data.yRange || [];
+      if (xRange.length >= 2 && yRange.length >= 2) {
+        const xmin = xRange[0];
+        const xmax = xRange[xRange.length - 1];
+        const ymin = yRange[0];
+        const ymax = yRange[yRange.length - 1];
+        const width = size.width;
+        const height = size.height;
+
+        ctx.save();
+        // Keep same transform as image draw (CSS pixels)
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        // Draw dashed horizontal line for profile depth (if provided)
+        if (typeof profileDepth === "number" && isFinite(profileDepth)) {
+          const clamped = Math.max(ymin, Math.min(ymax, profileDepth));
+          const py = ((ymax - clamped) / (ymax - ymin)) * height;
+          ctx.beginPath();
+          ctx.setLineDash([6, 4]);
+          ctx.strokeStyle = "rgba(255,200,200,0.95)";
+          ctx.lineWidth = 1.5;
+          ctx.moveTo(0, py);
+          ctx.lineTo(width, py);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        // Draw element markers
+        if (Array.isArray(array) && array.length > 0) {
+          for (const elem of array) {
+            const ex = Number(elem.x || 0);
+            const ey = Number(elem.y || 0);
+            if (!isFinite(ex) || !isFinite(ey)) continue;
+            // Map to CSS pixel coordinates
+            const px = ((ex - xmin) / (xmax - xmin || 1)) * width;
+            const py = ((ymax - ey) / (ymax - ymin || 1)) * height;
+
+            ctx.beginPath();
+            ctx.fillStyle = "rgba(255,192,255,0.95)";
+            ctx.strokeStyle = "rgba(150,50,180,0.95)";
+            ctx.lineWidth = 1.2;
+            ctx.arc(px, py, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+          }
+        }
+
+        ctx.restore();
+      }
+    } catch (e) {
+      // Non-fatal overlay error - continue silently
+      console.warn("Heatmap overlay draw error:", e);
+    }
   }, [data, size.width, size.height]);
 
   return (
