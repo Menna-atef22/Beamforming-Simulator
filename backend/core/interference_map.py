@@ -83,7 +83,8 @@ class InterferenceMap:
         if extent <= 0:
             raise ValueError("extent must be > 0")
         
-        steering_angle_rad = math.radians(steering_angle_deg)
+        # Invert steering sign so frontend positive angle steers to +X (right)
+        steering_angle_rad = math.radians(-steering_angle_deg)
         
         # Compute x and y coordinate ranges
         x_range = []
