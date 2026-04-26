@@ -79,6 +79,7 @@ export default function Home() {
               xRange: res.data.interference_map.x_range,
               yRange: res.data.interference_map.y_range,
               maxVal: res.data.interference_map.max_val,
+              maxValPerAmp: res.data.interference_map.max_val_per_amp ?? undefined,
             },
             metrics: {
               beamwidthDeg: res.data.metrics.beamwidth_deg,
@@ -87,8 +88,13 @@ export default function Home() {
               directivityDb: res.data.metrics.directivity_db ?? 0.0,
               gainPeak: res.data.metrics.gain_peak ?? 1.0,
             },
+            // Provide absolute amplitude from backend; attach current amplitude for heatmap scaling
             signalProfile: res.data.signal_profile,
           };
+          // Attach amplitude to interference map payload for heatmap brightness scaling
+          if (converted.interferenceMap) {
+            (converted.interferenceMap as any).amplitude = debouncedParams.amplitude ?? 1.0;
+          }
           setResult(converted);
           isInitialLoadRef.current = false;
         } else {

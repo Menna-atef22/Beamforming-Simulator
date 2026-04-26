@@ -71,6 +71,7 @@ class InterferenceMapSchema(BaseModel):
     x_range: List[float]
     y_range: List[float]
     max_val: float
+    max_val_per_amp: Optional[float] = None
 
 
 class SignalProfilePointSchema(BaseModel):

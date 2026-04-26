@@ -82,12 +82,28 @@ export default function HeatmapView({ data, title = "Interference Heatmap", arra
     const offCtx = offscreen.getContext("2d")!;
     const imageData = offCtx.createImageData(offscreen.width, offscreen.height);
 
+    // Determine brightness scaling from amplitude: use `maxValPerAmp` if available.
+    // IMPORTANT: use a fixed color mapping vmax to avoid per-frame normalization
+    // which cancels amplitude changes. We map values to [0, vmax_fixed].
+    const maxPerAmp = data.maxValPerAmp ?? 1.0;
+    const amplitudeScale = (typeof (data as any).amplitude === 'number' ? (data as any).amplitude : 1.0);
+    const FIXED_REF_AMPLITUDE = 2.0; // reference amplitude for color mapping vmax
+
     for (let y = 0; y < offscreen.height; y++) {
       for (let x = 0; x < offscreen.width; x++) {
         // Keep map orientation consistent with previous full-view render:
         // screen-top corresponds to highest Y rows in the source grid.
         const sourceGridY = Math.max(0, Math.min(gridSize - 1, (gridSize - 1) - y));
-        const [r, g, b] = valueToColor(data.grid[sourceGridY][x], data.maxVal);
+        const rawVal = data.grid[sourceGridY][x];
+
+        // Map raw grid value (absolute) to a scaled value reflecting current amplitude.
+        const scaledVal = rawVal; // rawVal already includes amplitude in backend
+
+        // To color map relative to fixed reference amplitude (vmax), avoid
+        // normalizing by the current amplitude. This makes the visual brightness
+        // respond to changes in `signal.amplitude`.
+        const peak = Math.max(1e-12, maxPerAmp * FIXED_REF_AMPLITUDE);
+        const [r, g, b] = valueToColor(scaledVal, peak);
         const idx = (y * offscreen.width + x) * 4;
         imageData.data[idx] = r;
         imageData.data[idx + 1] = g;

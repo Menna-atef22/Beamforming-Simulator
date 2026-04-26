@@ -41,7 +41,8 @@ def serialize_interference_map(imap) -> Dict[str, Any]:
         "grid": imap.grid,
         "x_range": imap.x_range,
         "y_range": imap.y_range,
-        "max_val": imap.max_val
+        "max_val": imap.max_val,
+        "max_val_per_amp": getattr(imap, "max_val_per_amp", None)
     }
 
 
