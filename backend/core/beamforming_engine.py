@@ -349,8 +349,8 @@ class BeamformingEngine:
                 # Invert sign so positive steering moves beam toward +X (right)
                 steering_angle_rad = math.radians(-steer)
                 
-                # phase_n = -2π * (x_n*sin(theta) + y_n*cos(theta)) / λ
-                steering_phase = -2.0 * math.pi * (
+                # phase_n = +2π * (x_n*sin(theta) + y_n*cos(theta)) / λ  (positive phase advance)
+                steering_phase = 2.0 * math.pi * (
                     elem_x * math.sin(steering_angle_rad) + elem_y * math.cos(steering_angle_rad)
                 ) / self.array.wavelength
                 

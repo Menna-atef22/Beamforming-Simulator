@@ -137,8 +137,8 @@ class InterferenceMap:
                     if distance < 1e-6:
                         continue
                     
-                    # phase_n = -2π * (x_n*sin(theta) + y_n*cos(theta)) / λ
-                    steering_phase = -2.0 * math.pi * (
+                    # phase_n = +2π * (x_n*sin(theta) + y_n*cos(theta)) / λ  (positive phase advance)
+                    steering_phase = 2.0 * math.pi * (
                         elem_x * math.sin(steering_angle_rad) + elem_y * math.cos(steering_angle_rad)
                     ) / self.array.wavelength
                     

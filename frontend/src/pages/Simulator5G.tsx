@@ -1061,7 +1061,7 @@ export default function Simulator5G() {
             ctx.translate(lx, ly);
             ctx.rotate(canvasAngle);
 
-            // Draw the gain lobe as a faint background effect (faint wave arcs)
+            // Draw the gain lobe pattern — brighter when apodization shows clear sidelobe suppression
             ctx.setLineDash([]);
             ctx.beginPath();
             ctx.moveTo(0, 0);
@@ -1074,11 +1074,13 @@ export default function Simulator5G() {
             else if (sec === "beta") beamHue = 120;
             else if (sec === "gamma") beamHue = 0;
 
-            // Much fainter lobe background matching the sector
-            ctx.fillStyle = `hsla(${beamHue},88%,62%,0.06)`;
+            // Apodization ON: show lobe shape more clearly so sidelobe suppression is visible
+            const lobeFillAlpha = towerApodizationEnabled ? 0.12 : 0.06;
+            const lobeStrokeAlpha = towerApodizationEnabled ? 0.45 : 0.2;
+            ctx.fillStyle = `hsla(${beamHue},88%,62%,${lobeFillAlpha})`;
             ctx.fill();
-            ctx.strokeStyle = `hsla(${beamHue},92%,70%,0.2)`;
-            ctx.lineWidth = 1;
+            ctx.strokeStyle = `hsla(${beamHue},92%,70%,${lobeStrokeAlpha})`;
+            ctx.lineWidth = towerApodizationEnabled ? 1.5 : 0.8;
             ctx.stroke();
 
             // ── Main Beam: Straight Bold Line ───────────────────────────────────────

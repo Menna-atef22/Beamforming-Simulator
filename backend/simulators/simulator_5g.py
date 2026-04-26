@@ -356,7 +356,7 @@ class Simulator5G(BeamformingEngine):
         amp = tower.amplitude if tower.amplitude is not None else self.signal.amplitude
         snr = tower.snr_db if tower.snr_db is not None else self.noise.snr_db
         win = tower.window_type if tower.window_type is not None else self.window.window_type
-        apod = tower.apodization_enabled if tower.apodization_enabled is not None else True
+        apod = tower.apodization_enabled if tower.apodization_enabled is not None else False
         return {
             "num_elements": int(n_elem),
             "spacing": float(spacing),
@@ -769,6 +769,7 @@ class Simulator5G(BeamformingEngine):
                 or abs(spacing - default_array.spacing) > 1e-12
                 or abs(amp - default_array.amplitude) > 1e-12
                 or win != default_window.window_type
+                or apod != (default_window.window_type != "rectangular")
             )
 
             if overriding:
