@@ -143,13 +143,15 @@ class BeamformingEngine:
         
         angles = []
         magnitudes = []
-        
-        # Compute array factor across angular range
-        num_angles = int(self.DEFAULT_ANGLE_RANGE / angle_step) + 1
-        
+
+        # Compute array factor across a linear angular range from -90 to +90
+        start_angle = -90.0
+        end_angle = 90.0
+        num_angles = int((end_angle - start_angle) / angle_step) + 1
+
         for i in range(num_angles):
-            angle_deg = -90.0 + i * angle_step
-            
+            angle_deg = start_angle + i * angle_step
+
             # Compute array factor at this angle with steering
             if steering_angles_deg is not None:
                 af_mag = self.array.compute_multi_steered_af(
@@ -163,7 +165,7 @@ class BeamformingEngine:
                     steering_angle_deg=steering_angle_deg,
                     weights=self.window.get_weights()
                 )[0]
-            
+
             angles.append(angle_deg)
             magnitudes.append(af_mag)
         
@@ -344,7 +346,8 @@ class BeamformingEngine:
                     continue
                 
                 steer = steering_angles_deg[n] if steering_angles_deg is not None else steering_angle_deg
-                steering_angle_rad = math.radians(steer)
+                # Invert sign so positive steering moves beam toward +X (right)
+                steering_angle_rad = math.radians(-steer)
                 
                 # phase_n = -2π * (x_n*sin(theta) + y_n*cos(theta)) / λ
                 steering_phase = -2.0 * math.pi * (
