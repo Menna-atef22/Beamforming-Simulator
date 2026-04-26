@@ -26,7 +26,7 @@ export default function SignalProfileView({ data, title = "Signal Profile (Line 
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
             <XAxis dataKey="position" tick={{ fontSize: 9 }}
               label={{ value: "Position", position: "bottom", offset: 5, style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
-            <YAxis tick={{ fontSize: 9 }}
+            <YAxis tick={{ fontSize: 9 }} domain={[0, 2.0]}
               label={{ value: "Amplitude", angle: -90, position: "insideLeft", style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
             <Tooltip contentStyle={{ backgroundColor: "hsl(240,10%,15%)", border: "1px solid hsl(240,10%,22%)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
             <Area type="monotone" dataKey="amplitude" stroke="hsl(270,70%,50%)" fill="url(#sigGrad)" strokeWidth={1.5} dot={false} />

@@ -374,12 +374,8 @@ class BeamformingEngine:
                 "amplitude": max(0.0, magnitude)
             })
         
-        # Normalize profile so peak amplitude = 1.0 for consistent display
-        if profile:
-            peak_amp = max(p["amplitude"] for p in profile)
-            if peak_amp > 1e-10:
-                for p in profile:
-                    p["amplitude"] = p["amplitude"] / peak_amp
+        # NOTE: Do NOT normalize the profile here - keep absolute amplitudes so
+        # the frontend can reflect the actual source amplitude (Amplitude slider).
         
         return profile
     

@@ -22,6 +22,8 @@ class InterferenceMapResult:
     y_range: List[float]
     max_val: float
     min_val: float
+    # Maximum grid magnitude per unit source amplitude (peak when amplitude=1.0)
+    max_val_per_amp: float = 0.0
     extent: float = 5.0
 
 
@@ -178,12 +180,21 @@ class InterferenceMap:
         if min_val == float('inf'):
             min_val = 0.0
         
+        # Compute peak-per-unit-amplitude for frontend absolute scaling
+        max_per_amp = 0.0
+        try:
+            if self.signal and getattr(self.signal, "amplitude", 0):
+                max_per_amp = max_val / float(self.signal.amplitude)
+        except Exception:
+            max_per_amp = 0.0
+
         return InterferenceMapResult(
             grid=grid,
             x_range=x_range,
             y_range=y_range,
             max_val=max_val,
             min_val=min_val,
+            max_val_per_amp=max_per_amp,
             extent=extent
         )
     

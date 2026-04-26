@@ -58,6 +58,8 @@ export interface InterferenceMapData {
   xRange: number[];
   yRange: number[];
   maxVal: number;
+  /** Peak grid magnitude per unit source amplitude (peak when amplitude=1.0) */
+  maxValPerAmp?: number;
   extent?: number;
 }
 
