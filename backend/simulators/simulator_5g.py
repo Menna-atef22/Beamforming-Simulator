@@ -406,75 +406,107 @@ class Simulator5G(BeamformingEngine):
         self,
         user_connections: Dict[int, Optional[int]]
     ) -> Dict[int, List[Dict]]:
-        """Split each tower's elements among its connected users.
+        """Split each tower's elements among its connected users using sector-based logic.
 
-        When a tower serves multiple users, its antenna elements are divided
-        into contiguous sub-arrays (one per user), each steered independently.
-        The split is even; any remainder elements are appended to the last user.
+        Each tower has 3 sectors: Alpha (0-120°), Beta (120-240°), Gamma (240-360°).
+        Each sector is allocated exactly N/3 elements. If multiple users are in
+        the same sector, that sector's elements are split among them.
 
         Args:
-            user_connections: {user_id: tower_id} as returned by
-                compute_user_connections().
+            user_connections: {user_id: tower_id} mapping.
 
         Returns:
             {tower_id: [
                 {
                     "user_id":       int,
                     "num_elements":  int,
-                    "element_start": int,   # 0-based inclusive
-                    "element_end":   int,   # 0-based exclusive
-                    "angle_deg":     float, # steering angle toward user
-                    "fraction":      float, # share of total elements (0-1)
+                    "element_start": int,
+                    "element_end":   int,
+                    "angle_deg":     float,
+                    "fraction":      float,
+                    "sector":        str,   # "Alpha", "Beta", or "Gamma"
                 }
             ]}
         """
-        # Group connected users per tower
-        tower_to_users: Dict[int, List[int]] = {t.id: [] for t in self.towers}
-        for uid, tid in user_connections.items():
-            if tid is not None and tid in tower_to_users:
-                tower_to_users[tid].append(uid)
-
+        # Group connected users per tower and per sector
+        tower_to_sector_users: Dict[int, Dict[str, List[int]]] = {
+            t.id: {"Alpha": [], "Beta": [], "Gamma": []} for t in self.towers
+        }
+        
         user_by_id = {u.id: u for u in self.users}
         tower_by_id = {t.id: t for t in self.towers}
+
+        for uid, tid in user_connections.items():
+            if tid is not None and tid in tower_to_sector_users:
+                user = user_by_id.get(uid)
+                tower = tower_by_id.get(tid)
+                if not user or not tower:
+                    continue
+                
+                # Compute angle 0-360
+                dx, dy = user.x - tower.x, user.y - tower.y
+                angle_deg = (math.atan2(dx, dy) * 180 / math.pi + 360) % 360
+                
+                if 0 <= angle_deg < 120:
+                    sector = "Alpha"
+                elif 120 <= angle_deg < 240:
+                    sector = "Beta"
+                else:
+                    sector = "Gamma"
+                
+                tower_to_sector_users[tid][sector].append(uid)
 
         allocations: Dict[int, List[Dict]] = {}
         for tower in self.towers:
             n_total = tower.num_elements if tower.num_elements is not None else self.array.num_elements
-            connected_uids = tower_to_users.get(tower.id, [])
+            # Distribute elements evenly, remainder goes to Alpha then Beta
+            base_n = n_total // 3
+            rem = n_total % 3
+            sector_sizes = {
+                "Alpha": base_n + (1 if rem >= 1 else 0),
+                "Beta":  base_n + (1 if rem >= 2 else 0),
+                "Gamma": base_n
+            }
+            sector_offsets = {
+                "Alpha": 0,
+                "Beta":  sector_sizes["Alpha"],
+                "Gamma": sector_sizes["Alpha"] + sector_sizes["Beta"]
+            }
 
-            if not connected_uids:
-                allocations[tower.id] = []
-                continue
-
-            n_users = len(connected_uids)
-            base_share = n_total // n_users
-            remainder   = n_total - base_share * n_users
-
-            entries: List[Dict] = []
-            cursor = 0
-            for i, uid in enumerate(connected_uids):
-                share = base_share + (1 if i == n_users - 1 else 0) * remainder
-                share = max(1, share)
-
-                user = user_by_id.get(uid)
-                if user is not None:
-                    dx = user.x - tower.x
-                    dy = user.y - tower.y
-                    angle_deg = math.atan2(dx, dy) * 180 / math.pi
-                else:
+            tower_entries: List[Dict] = []
+            for sector in ["Alpha", "Beta", "Gamma"]:
+                uids = tower_to_sector_users[tower.id][sector]
+                if not uids:
+                    continue
+                
+                n_sec = sector_sizes[sector]
+                n_users = len(uids)
+                base_share = n_sec // n_users
+                remainder   = n_sec - base_share * n_users
+                
+                cursor = sector_offsets[sector]
+                for i, uid in enumerate(uids):
+                    share = base_share + (1 if i == n_users - 1 else 0) * remainder
+                    share = max(1, share)
+                    
+                    user = user_by_id.get(uid)
                     angle_deg = 0.0
+                    if user:
+                        dx, dy = user.x - tower.x, user.y - tower.y
+                        angle_deg = math.atan2(dx, dy) * 180 / math.pi
 
-                entries.append({
-                    "user_id":       uid,
-                    "num_elements":  share,
-                    "element_start": cursor,
-                    "element_end":   cursor + share,
-                    "angle_deg":     angle_deg,
-                    "fraction":      share / max(1, n_total),
-                })
-                cursor += share
-
-            allocations[tower.id] = entries
+                    tower_entries.append({
+                        "user_id":       uid,
+                        "num_elements":  share,
+                        "element_start": cursor,
+                        "element_end":   cursor + share,
+                        "angle_deg":     angle_deg,
+                        "fraction":      share / max(1, n_total),
+                        "sector":        sector
+                    })
+                    cursor += share
+            
+            allocations[tower.id] = tower_entries
 
         return allocations
 

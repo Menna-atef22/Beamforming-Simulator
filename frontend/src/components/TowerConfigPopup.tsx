@@ -30,6 +30,12 @@ interface TowerConfigPopupProps {
   onClose: () => void;
   onChange: (updated: TowerParams) => void;
   isAutoSteering?: boolean;
+  allocations?: Array<{
+    user_id: number;
+    num_elements: number;
+    sector: string;
+    userHue?: number;
+  }>;
 }
 
 // ─── Slider row ───────────────────────────────────────────────────────────────
@@ -92,6 +98,7 @@ export default function TowerConfigPopup({
   onClose,
   onChange,
   isAutoSteering = false,
+  allocations = [],
 }: TowerConfigPopupProps) {
   // Keep popup inside viewport — flip to left if too close to right edge
   const popupW = 220;
@@ -236,6 +243,46 @@ export default function TowerConfigPopup({
           />
         </div>
 
+
+        {/* Sector Allocations */}
+        {allocations.length > 0 && (
+          <div className="flex flex-col gap-2 mt-1">
+            <div className="flex items-center justify-between">
+               <span className="text-[9px] font-mono uppercase tracking-wider text-muted-foreground">
+                 Connected Users
+               </span>
+               <span className="text-[9px] font-mono text-muted-foreground/60">
+                 {allocations.length} total
+               </span>
+            </div>
+            <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto pr-1">
+              {allocations.map((a) => (
+                <div 
+                  key={a.user_id}
+                  className="flex items-center justify-between p-1.5 rounded bg-white/5 border border-white/10"
+                >
+                  <div className="flex items-center gap-2">
+                    <span 
+                      className="w-1.5 h-1.5 rounded-full" 
+                      style={{ background: `hsl(${a.userHue ?? 0}, 70%, 60%)` }} 
+                    />
+                    <span className="text-[10px] font-mono font-medium">U{a.user_id}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span 
+                      className="text-[8px] font-mono px-1 py-0.5 rounded border border-white/20 bg-white/10 text-white/80"
+                    >
+                      {a.sector}
+                    </span>
+                    <span className="text-[10px] font-mono text-white/60">
+                      {a.num_elements} elements
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Position read-out */}
         <div

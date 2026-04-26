@@ -945,46 +945,56 @@ export default function Simulator5G() {
         const tx = toCanvasX(tower.x), ty = toCanvasY(tower.y);
         const hue = TOWER_COLORS[tower.id]?.hue ?? DEFAULT_TOWER_HUE;
 
-        // ── Steering and Lobe logic ────────────────────────────────────────────────
-        const connectedUsersForThisTower = localUsers.filter(
-          (u) => liveConnectedTowerByUserId.get(u.id) === tower.id,
-        );
-        const isAutoSteering = connectedUsersForThisTower.length > 0;
-        
-        let primaryUser: (typeof localUsers)[number] | null = null;
-        if (isAutoSteering) {
-          let bestDist = Number.POSITIVE_INFINITY;
-          for (const u of connectedUsersForThisTower) {
-            const d = Math.hypot(u.x - tower.x, u.y - tower.y);
-            if (d < bestDist) { bestDist = d; primaryUser = u; }
-          }
-        }
+        // ── Alpha/Beta/Gamma Sectors ────────────────────────────────────────────────
+        const coverageRadiusM = drawCoverageRadiusByTowerId.get(tower.id) ?? ((tower as any).coverage_radius_m ?? 5.0);
+        const radiusPx = coverageRadiusM * mToPx;
 
-        const lobeOrigin = towerArrayCenterById.get(tower.id);
-        const lx = lobeOrigin?.x ?? tx;
-        const ly = lobeOrigin?.y ?? ty;
+        // Draw colored wedge zones
+        const sectors = [
+          { name: "Alpha", start: 0, end: 120, color: "hsla(210, 70%, 50%, 0.08)", label: "α", labelDeg: 60 },
+          { name: "Beta",  start: 120, end: 240, color: "hsla(120, 70%, 50%, 0.08)", label: "β", labelDeg: 180 },
+          { name: "Gamma", start: 240, end: 360, color: "hsla(0, 70%, 50%, 0.08)", label: "γ", labelDeg: 300 },
+        ];
 
-        let canvasAngle: number;
-        let lobeMaxRadiusPx: number;
-        let effectiveSteerDeg: number;
+        sectors.forEach(s => {
+          ctx.beginPath();
+          ctx.moveTo(tx, ty);
+          // Convert compass degrees (0=North, CW) to canvas radians (0=East, CW)
+          const startRad = (s.start - 90) * Math.PI / 180;
+          const endRad = (s.end - 90) * Math.PI / 180;
+          ctx.arc(tx, ty, radiusPx, startRad, endRad);
+          ctx.closePath();
+          ctx.fillStyle = s.color;
+          ctx.fill();
+        });
 
-        if (primaryUser) {
-          const ux = toCanvasX(primaryUser.x);
-          const uy = toCanvasY(primaryUser.y);
-          const dxC = ux - lx;
-          const dyC = uy - ly;
-          const distPx = Math.hypot(dxC, dyC);
-          canvasAngle = Math.atan2(dxC, -dyC);
-          lobeMaxRadiusPx = distPx - 6; 
-          effectiveSteerDeg = (Math.atan2(primaryUser.x - tower.x, primaryUser.y - tower.y) * 180) / Math.PI;
-        } else {
-          effectiveSteerDeg = tower.manual_steering_deg ?? 0;
-          canvasAngle = (effectiveSteerDeg * Math.PI) / 180;
-          const coverPx = (drawCoverageRadiusByTowerId.get(tower.id) ?? 4.5) * mToPx;
-          lobeMaxRadiusPx = Math.max(26, Math.min(coverPx * 0.9, CANVAS_W * 0.2));
-        }
+        // Sector boundary lines
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = `hsla(${hue},50%,65%,0.35)`;
+        ctx.lineWidth = 1.2;
+        [0, 120, 240].forEach(deg => {
+          const rad = (deg - 90) * Math.PI / 180;
+          ctx.beginPath();
+          ctx.moveTo(tx, ty);
+          ctx.lineTo(tx + Math.cos(rad) * radiusPx, ty + Math.sin(rad) * radiusPx);
+          ctx.stroke();
+        });
+        ctx.setLineDash([]);
 
+        // Sector Labels (α, β, γ)
+        ctx.font = "italic 12px serif";
+        ctx.textAlign = "center";
+        ctx.fillStyle = `hsla(${hue},60%,90%,0.6)`;
+        sectors.forEach(s => {
+          const r = (s.labelDeg - 90) * Math.PI / 180;
+          const labelDist = radiusPx * 0.65;
+          ctx.fillText(s.label, tx + Math.cos(r) * labelDist, ty + Math.sin(r) * labelDist + 4);
+        });
+
+        // ── Steering and Lobe logic (Multi-Beam) ────────────────────────────────────
         const towerAllocs = elementAllocsByTowerId.get(tower.id) ?? [];
+        const isAutoSteering = towerAllocs.length > 0;
+
         let statusLine1: string;
         let statusLine2: string | null = null;
 
@@ -993,12 +1003,14 @@ export default function Simulator5G() {
             .map(a => `${a.num_elements} elements → U${a.user_id}`)
             .join(", ");
         } else if (isAutoSteering) {
-          statusLine1 = `θ ${effectiveSteerDeg.toFixed(1)}° AUTO`;
+          const alloc = towerAllocs[0];
+          statusLine1 = `θ ${alloc.angle_deg?.toFixed(1)}° AUTO`;
           const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
-          const deltaPhiRad = 2 * Math.PI * towerSpacingLambda * Math.sin((effectiveSteerDeg * Math.PI) / 180);
+          const deltaPhiRad = 2 * Math.PI * towerSpacingLambda * Math.sin((alloc.angle_deg * Math.PI) / 180);
           statusLine2 = `Δφ ${deltaPhiRad.toFixed(2)} rad`;
         } else {
-          statusLine1 = `θ ${effectiveSteerDeg.toFixed(1)}° MANUAL`;
+          const manualDeg = tower.manual_steering_deg ?? 0;
+          statusLine1 = `θ ${manualDeg.toFixed(1)}° MANUAL`;
         }
 
         ctx.fillStyle = `hsl(${hue},70%,55%)`;
@@ -1012,45 +1024,136 @@ export default function Simulator5G() {
         ctx.fill();
         ctx.stroke();
 
-        const elemN = Math.max(2, Math.min(64, Math.round(Number((tower as any).num_elements ?? 16))));
-        const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
-        const towerWindowType = String((tower as any).window_type ?? "rectangular");
-        const towerApodizationEnabled = Boolean((tower as any).apodization_enabled ?? false);
-        const weights = buildWindowWeights(elemN, towerWindowType, towerApodizationEnabled);
-        
-        const points: Array<{ x: number; y: number }> = [];
-        const baseLobeRadiusPx = 6;
-        for (const rel of lobeAngles) {
-          const af = computeArrayFactorNorm(rel, 0, elemN, towerSpacingLambda, weights);
-          const r = baseLobeRadiusPx + lobeMaxRadiusPx * Math.pow(af, 0.92);
-          const a = (rel * Math.PI) / 180;
-          points.push({ x: Math.sin(a) * r, y: -Math.cos(a) * r });
+        // Draw Lobe for EACH user allocation (Independent sub-arrays)
+        for (const alloc of towerAllocs) {
+          const user = localUsers.find(u => u.id === alloc.user_id);
+          if (!user) continue;
+
+          // Beams originate exactly from the tower's center position
+          const lx = tx;
+          const ly = ty;
+
+          const ux = toCanvasX(user.x);
+          const uy = toCanvasY(user.y);
+          const dxC = ux - lx;
+          const dyC = uy - ly;
+          const distPx = Math.hypot(dxC, dyC);
+          const canvasAngle = Math.atan2(dxC, -dyC);
+          const lobeMaxRadiusPx = distPx; 
+
+          const elemN = Math.max(1, Math.round(alloc.num_elements));
+          const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
+          const towerWindowType = String((tower as any).window_type ?? "rectangular");
+          const towerApodizationEnabled = Boolean((tower as any).apodization_enabled ?? false);
+          const weights = buildWindowWeights(elemN, towerWindowType, towerApodizationEnabled);
+          
+          const points: Array<{ x: number; y: number }> = [];
+          const baseLobeRadiusPx = 0;
+          for (const rel of lobeAngles) {
+            const af = computeArrayFactorNorm(rel, 0, elemN, towerSpacingLambda, weights);
+            const r = baseLobeRadiusPx + lobeMaxRadiusPx * Math.pow(af, 0.92);
+            const a = (rel * Math.PI) / 180;
+            points.push({ x: Math.sin(a) * r, y: -Math.cos(a) * r });
+          }
+
+          if (points.length > 1) {
+            ctx.save();
+            ctx.translate(lx, ly);
+            ctx.rotate(canvasAngle);
+
+            // Draw the gain lobe as a faint background effect (faint wave arcs)
+            ctx.setLineDash([]);
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            for (const p of points) ctx.lineTo(p.x, p.y);
+            ctx.closePath();
+
+            const userHue = USER_COLORS[user.id]?.hue ?? DEFAULT_USER_HUE;
+            // Much fainter lobe background
+            ctx.fillStyle = `hsla(${userHue},88%,62%,0.06)`;
+            ctx.fill();
+            ctx.strokeStyle = `hsla(${userHue},92%,70%,0.2)`;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            // ── Main Beam: Straight Bold Line ───────────────────────────────────────
+            ctx.restore();
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(lx, ly);
+            ctx.lineTo(ux, uy);
+            
+            // Outer glow / shadow
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = `hsla(${userHue},90%,65%,0.6)`;
+            ctx.strokeStyle = `hsla(${userHue},95%,75%,0.95)`;
+            ctx.lineWidth = 3.5;
+            ctx.lineCap = "round";
+            ctx.stroke();
+
+            // Inner core
+            ctx.shadowBlur = 0;
+            ctx.strokeStyle = "white";
+            ctx.lineWidth = 1.2;
+            ctx.stroke();
+            ctx.restore();
+          }
         }
 
-        if (points.length > 1) {
-          ctx.save();
-          ctx.translate(lx, ly);
-          ctx.rotate(canvasAngle);
+        // Draw manual fallback beam if NO users connected
+        if (!isAutoSteering) {
+          const manualDeg = tower.manual_steering_deg ?? 0;
+          const canvasAngle = (manualDeg * Math.PI) / 180;
+          const coverPx = (drawCoverageRadiusByTowerId.get(tower.id) ?? 4.5) * mToPx;
+          const lobeMaxRadiusPx = Math.max(26, Math.min(coverPx, CANVAS_W * 0.2));
 
-          ctx.setLineDash(isAutoSteering ? [] : [4, 3]);
-          ctx.beginPath();
-          ctx.moveTo(0, 0);
-          for (const p of points) ctx.lineTo(p.x, p.y);
-          ctx.closePath();
+          const lx = tx;
+          const ly = ty;
 
-          const lobeFillAlpha = isAutoSteering ? (towerApodizationEnabled ? 0.20 : 0.14) : 0.08;
-          ctx.fillStyle = `hsla(${hue},88%,62%,${lobeFillAlpha})`;
-          ctx.fill();
+          const elemN = Math.max(2, Math.min(64, Math.round(Number((tower as any).num_elements ?? 16))));
+          const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
+          const weights = buildWindowWeights(elemN, "rectangular", false);
+          
+          const points: Array<{ x: number; y: number }> = [];
+          const baseLobeRadiusPx = 0;
+          for (const rel of lobeAngles) {
+            const af = computeArrayFactorNorm(rel, 0, elemN, towerSpacingLambda, weights);
+            const r = baseLobeRadiusPx + lobeMaxRadiusPx * Math.pow(af, 0.92);
+            const a = (rel * Math.PI) / 180;
+            points.push({ x: Math.sin(a) * r, y: -Math.cos(a) * r });
+          }
 
-          ctx.strokeStyle = `hsla(${hue},92%,70%,${isAutoSteering ? (towerApodizationEnabled ? 0.9 : 0.72) : 0.4})`;
-          ctx.lineWidth = isAutoSteering ? (towerApodizationEnabled ? 1.7 : 1.4) : 1.1;
-          ctx.beginPath();
-          ctx.moveTo(points[0].x, points[0].y);
-          for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-          ctx.stroke();
+          if (points.length > 1) {
+            ctx.save();
+            ctx.translate(lx, ly);
+            ctx.rotate(canvasAngle);
+            
+            // Faint lobe background for manual
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            for (const p of points) ctx.lineTo(p.x, p.y);
+            ctx.closePath();
+            ctx.fillStyle = `hsla(${hue},88%,62%,0.04)`;
+            ctx.fill();
+            ctx.strokeStyle = `hsla(${hue},92%,70%,0.15)`;
+            ctx.lineWidth = 1;
+            ctx.stroke();
 
-          ctx.restore();
-          ctx.setLineDash([]);
+            // Straight manual beam
+            const targetX = Math.sin(0) * lobeMaxRadiusPx; // 0 because we rotated by canvasAngle
+            const targetY = -Math.cos(0) * lobeMaxRadiusPx;
+            
+            ctx.setLineDash([8, 6]);
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(targetX, targetY);
+            ctx.strokeStyle = `hsla(${hue},90%,75%,0.5)`;
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            ctx.restore();
+          }
         }
 
         ctx.fillStyle = `hsl(${hue},70%,88%)`;
@@ -1418,7 +1521,6 @@ export default function Simulator5G() {
           real += a * Math.cos(phase);
           imag += a * Math.sin(phase);
         }
-        // True interference intensity from complex superposition.
         const intensity = real * real + imag * imag;
         row.push(intensity);
         flatVals.push(intensity);
@@ -1426,18 +1528,24 @@ export default function Simulator5G() {
       rawGrid.push(row);
     }
 
-    // Robust normalization: use a high percentile instead of absolute max
-    // to avoid a single hotspot turning the whole map bright.
+    // Percentile normalization (5th to 95th) for robust contrast
     flatVals.sort((a, b) => a - b);
-    const p = 0.99;
-    const idx = Math.min(flatVals.length - 1, Math.max(0, Math.floor(p * (flatVals.length - 1))));
-    const maxVal = Math.max(1e-12, flatVals[idx] ?? 1e-12);
+    const minIdx = Math.floor(0.05 * (flatVals.length - 1));
+    const maxIdx = Math.floor(0.95 * (flatVals.length - 1));
+    const robustMin = flatVals[minIdx];
+    const robustMax = Math.max(robustMin + 1e-12, flatVals[maxIdx]);
+
+    const range = robustMax - robustMin;
+    const finalGrid = rawGrid.map(row => row.map(v => {
+      // Scale and clamp to [0, 1]
+      return Math.max(0, Math.min(1, (v - robustMin) / range));
+    }));
 
     return {
-      grid: rawGrid,
+      grid: finalGrid,
       xRange,
       yRange,
-      maxVal: Math.max(1e-9, maxVal),
+      maxVal: 1.0, 
       extent: Math.max(spanX, spanY),
     };
   }, [
@@ -1696,6 +1804,12 @@ export default function Simulator5G() {
               towerHue={color?.hue ?? DEFAULT_TOWER_HUE}
               towerName={color?.name ?? `Tower ${selectedTowerId}`}
               anchorPx={towerPopupAnchor}
+              allocations={(elementAllocsByTowerId.get(selectedTowerId) ?? []).map(a => ({
+                user_id: a.user_id,
+                num_elements: a.num_elements,
+                sector: a.sector,
+                userHue: USER_COLORS[a.user_id]?.hue ?? DEFAULT_USER_HUE
+              }))}
               isAutoSteering={localUsers.some(
                 (u) => liveConnectedTowerByUserId.get(u.id) === selectedTowerId,
               )}
