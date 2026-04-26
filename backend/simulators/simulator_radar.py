@@ -69,6 +69,7 @@ class RadarScanResult:
     detections: List[DetectedPeak]
     range_doppler_map: Dict
     metrics: Dict
+    noise_buffer: List[float]
 
 
 class SimulatorRadar(BeamformingEngine):
@@ -395,6 +396,11 @@ class SimulatorRadar(BeamformingEngine):
             "avg_confidence": sum(d.confidence for d in detections) / max(len(detections), 1)
         }
         
+        noise_buffer = [0.0] * 360
+        if enable_noise:
+            # We use an arbitrary amplitude of 1.0 for the visual chart reference noise.
+            noise_buffer = self.noise.add_noise_to_array(noise_buffer)
+            
         return RadarScanResult(
             angles_deg=angles_deg,
             magnitudes=magnitudes,
@@ -402,7 +408,8 @@ class SimulatorRadar(BeamformingEngine):
             targets=self.targets.copy(),
             detections=detections,
             range_doppler_map=range_doppler_map,
-            metrics=metrics
+            metrics=metrics,
+            noise_buffer=noise_buffer
         )
     
     def get_range_profile(self, num_samples: int = 100) -> Dict:

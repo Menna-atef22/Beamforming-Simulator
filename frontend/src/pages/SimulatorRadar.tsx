@@ -261,7 +261,7 @@ export default function SimulatorRadar() {
   const [params, setParams] = useState<BeamformingParams & Record<string, any>>(
     defaultParams,
   );
-  const [showTradeoffs, setShowTradeoffs] = useState(true);
+
   const debouncedParams = useDebounce(params, 300);
   const [result, setResult] = useState<SimulatorRadarResponse | null>(null);
   const isInitialLoadRef = useRef(true);
@@ -315,6 +315,7 @@ export default function SimulatorRadar() {
   const angleChartBufRef = useRef<Float32Array>(new Float32Array(ANGLE_SLOTS));
   /** Tracks the last slot index written so we can detect revolution boundaries */
   const angleChartLastSlotRef = useRef<number>(ANGLE_SLOTS - 1);
+  const backendNoiseRef = useRef<number[]>([]);
   const [angleSamples, setAngleSamples] = useState<AngleSample[]>([]);
 
   const beamInsideRef = useRef<Map<string, boolean>>(new Map());
@@ -420,6 +421,7 @@ export default function SimulatorRadar() {
         const res = await simulate(debouncedParams, isInitialLoadRef.current);
         if (isMounted && res?.success) {
           setResult(res);
+          backendNoiseRef.current = res.data?.noiseBuffer || [];
           isInitialLoadRef.current = false;
         }
       } finally {
@@ -473,23 +475,7 @@ export default function SimulatorRadar() {
     // beamAngle is compass convention master variable
     const effectiveSweepDeg = clampAngleDeg360(sweepDeg);  // already compass, no offset
 
-    // ── SNR model ─────────────────────────────────────────────────────────────
-    // noise_std = signal_amplitude / 10^(SNR_dB/20)
-    // At SNR=60 dB: noise_std = amplitude/1000  → virtually zero
-    // At SNR=15 dB: noise_std = amplitude/5.6   → moderate noise
-    // At SNR=0  dB: noise_std = amplitude/1     → noise equals signal
-    const snrLinear = Math.pow(10, dp.snrDb / 20);
-    const noiseStd = dp.amplitude / snrLinear;
-    // Detection threshold: 3× noise std (≈ 10 dB margin above noise floor)
-    const detectionThreshold = 3 * noiseStd;
-
-    // Gaussian noise sample via Box-Muller — always safe (u1 clamped away from 0)
-    const gaussNoise = (): number => {
-      const u1 = Math.max(1e-15, Math.random());
-      return (
-        Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * Math.random())
-      );
-    };
+    // No local SNR calculations — backend is the single source of truth
 
     // Shortest-arc angular difference (degrees)
     const wrapDiff = (a: number, b: number): number => {
@@ -499,79 +485,64 @@ export default function SimulatorRadar() {
     };
 
     // ── Angle Detection chart — written every frame ───────────────────────────
-    // We track whether the beam has completed a full revolution.  At the start
-    // of each new revolution we reset the entire buffer so stale values from
-    // previous sweeps never persist and pollute the chart at high SNR.
-    const slotIdx =
-      Math.round((((effectiveSweepDeg % 360) + 360) % 360) * 2) % ANGLE_SLOTS;
+    try {
+      // We track whether the beam has completed a full revolution.  At the start
+      // of each new revolution we reset the entire buffer so stale values from
+      // previous sweeps never persist and pollute the chart at high SNR.
+      const slotIdx =
+        Math.round((((effectiveSweepDeg % 360) + 360) % 360) * 2) % ANGLE_SLOTS;
 
-    // Detect revolution boundary: when slotIdx wraps back near 0
-    if (
-      slotIdx < 4 &&
-      (angleChartLastSlotRef.current ?? ANGLE_SLOTS - 1) > ANGLE_SLOTS - 8
-    ) {
-      // New revolution started — clear the buffer so stale noise never persists
-      angleChartBufRef.current.fill(0);
-    }
-    angleChartLastSlotRef.current = slotIdx;
-
-    // Compute clean signal for this slot (0 when beam is not over any target)
-    // Detection condition per spec: |θ - θ_target| < beamwidth/2 + target_angular_size/2
-    // where target_angular_size = atan2(target_radius, target_distance) in degrees
-    let slotSignal = 0;
-    for (const t of targets) {
-      const targetAngleDeg = clampAngleDeg360(t.compassAngle);
-      const diff = Math.abs(effectiveSweepDeg - targetAngleDeg);
-      const deltaDeg = diff > 180 ? 360 - diff : diff;
-      const targetRadiusM = t.sizeM / 2;
-      const targetAngularSizeDeg =
-        (Math.atan2(targetRadiusM, Math.max(0.1, t.distanceM)) * 180) / Math.PI;
-      const detectionHalfWindow = halfBeam + targetAngularSizeDeg / 2;
-      if (deltaDeg >= detectionHalfWindow) continue;
-      const distM = Math.max(0.1, t.distanceM);
-      let cleanSignal: number;
-      if (currentMode === "mechanical") {
-        // Mechanical: uniform illumination within beamwidth, zero outside
-        const frac = deltaDeg / halfBeam;
-        cleanSignal =
-          (dp.amplitude * Math.cos((frac * Math.PI) / 2)) / (distM * distM);
-      } else {
-        // Beamforming: sinc-shaped array factor (return pulse width scales with beamwidth)
-        const sv = sincNorm(deltaDeg / Math.max(0.5, beamWidthDeg));
-        cleanSignal = (dp.amplitude * sv * sv) / (distM * distM);
+      // Detect revolution boundary: when slotIdx wraps back near 0
+      if (
+        slotIdx < 4 &&
+        (angleChartLastSlotRef.current ?? ANGLE_SLOTS - 1) > ANGLE_SLOTS - 8
+      ) {
+        // New revolution started — clear the buffer so stale noise never persists
+        angleChartBufRef.current.fill(0);
       }
-      if (!Number.isFinite(cleanSignal)) cleanSignal = 0;
-      if (cleanSignal > slotSignal) slotSignal = cleanSignal;
-    }
+      angleChartLastSlotRef.current = slotIdx;
 
-    // Add Gaussian noise scaled by noise_std = amplitude / 10^(SNR/20).
-    // At 60 dB: noiseStd = amplitude/1000 → invisible on chart.
-    // At 15 dB: noiseStd = amplitude/5.6  → moderate, spike still clear.
-    // At 0  dB: noiseStd = amplitude/1    → heavy noise, spike may be buried.
-    const chartNoiseStd = noiseStd * 0.35;
-    const noiseSample = chartNoiseStd * gaussNoise();
-    const slotIntensity = Math.max(0, slotSignal + noiseSample);
-    angleChartBufRef.current[slotIdx] = Number.isFinite(slotIntensity)
-      ? slotIntensity
-      : 0;
-
-    // ── False detections at low SNR (< 15 dB) ────────────────────────────────
-    // Scatter occasional noise bumps at random angles so the chart shows a
-    // visibly noisy/blurry baseline.  Disabled at ≥ 15 dB for a clean display.
-    if (dp.snrDb < 15 && Math.random() < 0.25) {
-      const nFalse = 1 + Math.floor(Math.random() * 2);
-      for (let f = 0; f < nFalse; f++) {
-        const offsetDeg = (Math.random() - 0.5) * 40;
-        const falseAngle = clampAngleDeg360(effectiveSweepDeg + offsetDeg);
-        const fi = Math.round(falseAngle * 2) % ANGLE_SLOTS;
-        // False amplitude proportional to noise std — stronger the lower the SNR
-        const falseAmp =
-          noiseStd * Math.abs(gaussNoise()) * ((15 - dp.snrDb) / 15);
-        angleChartBufRef.current[fi] = Math.max(
-          angleChartBufRef.current[fi],
-          falseAmp,
-        );
+      // Compute clean signal for this slot (0 when beam is not over any target)
+      let slotSignal = 0;
+      for (const t of targets) {
+        const targetAngleDeg = clampAngleDeg360(t.compassAngle);
+        const diff = Math.abs(effectiveSweepDeg - targetAngleDeg);
+        const deltaDeg = diff > 180 ? 360 - diff : diff;
+        const targetRadiusM = t.sizeM / 2;
+        const targetAngularSizeDeg =
+          (Math.atan2(targetRadiusM, Math.max(0.1, t.distanceM)) * 180) / Math.PI;
+        const detectionHalfWindow = halfBeam + targetAngularSizeDeg / 2;
+        if (deltaDeg >= detectionHalfWindow) continue;
+        const distM = Math.max(0.1, t.distanceM);
+        let cleanSignal: number;
+        if (currentMode === "mechanical") {
+          const frac = deltaDeg / halfBeam;
+          cleanSignal =
+            (dp.amplitude * Math.cos((frac * Math.PI) / 2)) / (distM * distM);
+        } else {
+          const sv = sincNorm(deltaDeg / Math.max(0.5, beamWidthDeg));
+          cleanSignal = (dp.amplitude * sv * sv) / (distM * distM);
+        }
+        if (!Number.isFinite(cleanSignal)) cleanSignal = 0;
+        if (cleanSignal > slotSignal) slotSignal = cleanSignal;
       }
+
+      // Single Source of Truth: Apply the exact noise sample computed by the Python backend
+      const noiseBuffer = backendNoiseRef.current;
+      let appliedNoise = 0;
+      if (noiseBuffer && noiseBuffer.length > 0) {
+        // Backend computes a 360-degree array of standard normal noise * noise_multiplier
+        const exactAngleIdx = Math.round(effectiveSweepDeg) % 360;
+        const backendNoiseSample = noiseBuffer[exactAngleIdx] || 0;
+        // Scale proportionally for visual effect against target signals (amplitude)
+        appliedNoise = Math.max(0, backendNoiseSample * dp.amplitude * 0.35);
+      }
+
+      angleChartBufRef.current[slotIdx] = Number.isFinite(slotSignal)
+        ? Math.max(0, slotSignal + appliedNoise)
+        : 0;
+    } catch (e) {
+      console.warn("Radar angle chart computation error:", e);
     }
 
     // ── Flash + detection recording ───────────────────────────────────────────
@@ -590,112 +561,94 @@ export default function SimulatorRadar() {
     const hitIds = new Set<string>();
     const frameDetections: DetectionPoint[] = [];
 
-    for (let ti = 0; ti < targets.length; ti++) {
-      const t = targets[ti];
-      const targetAngleDeg = clampAngleDeg360(t.compassAngle);
-      const diff = Math.abs(effectiveSweepDeg - targetAngleDeg);
-      const deltaDeg = diff > 180 ? 360 - diff : diff;
-      // Target angular size contributes to detection window (spec requirement)
-      const targetRadiusM = t.sizeM / 2;
-      const targetAngularSizeDeg =
-        (Math.atan2(targetRadiusM, Math.max(0.1, t.distanceM)) * 180) / Math.PI;
-      const effectiveHalf =
-        currentMode === "mechanical"
-          ? halfBeam * 1.1 + targetAngularSizeDeg / 2
-          : halfBeam + targetAngularSizeDeg / 2;
-      const inBeam = deltaDeg < effectiveHalf;
+    try {
+      for (let ti = 0; ti < targets.length; ti++) {
+        const t = targets[ti];
+        const targetAngleDeg = clampAngleDeg360(t.compassAngle);
+        const diff = Math.abs(effectiveSweepDeg - targetAngleDeg);
+        const deltaDeg = diff > 180 ? 360 - diff : diff;
+        // Target angular size contributes to detection window (spec requirement)
+        const targetRadiusM = t.sizeM / 2;
+        const targetAngularSizeDeg =
+          (Math.atan2(targetRadiusM, Math.max(0.1, t.distanceM)) * 180) / Math.PI;
+        const effectiveHalf =
+          currentMode === "mechanical"
+            ? halfBeam * 1.1 + targetAngularSizeDeg / 2
+            : halfBeam + targetAngularSizeDeg / 2;
+        const inBeam = deltaDeg < effectiveHalf;
 
-      const wasInside = beamInsideRef.current.get(t.id) ?? false;
-      beamInsideRef.current.set(t.id, inBeam);
+        const wasInside = beamInsideRef.current.get(t.id) ?? false;
+        beamInsideRef.current.set(t.id, inBeam);
 
-      if (!inBeam) continue;
+        if (!inBeam) continue;
 
-      // Compute clean signal for this target to check against detection threshold.
-      // Targets that are too weak (far away at low SNR) are missed.
-      const distM = Math.max(0.1, t.distanceM);
-      let cleanSignal: number;
-      if (currentMode === "mechanical") {
-        const frac = deltaDeg / effectiveHalf;
-        cleanSignal =
-          (dp.amplitude * Math.max(0, Math.cos((frac * Math.PI) / 2))) /
-          (distM * distM);
-      } else {
-        const sv = sincNorm(deltaDeg / beamWidthDeg);
-        cleanSignal = (dp.amplitude * sv * sv) / (distM * distM);
-      }
-
-      // ── SNR-weighted detection gate ──────────────────────────────────────────
-      // Base physical model: the noisy received power must exceed threshold.
-      const noisySNR = cleanSignal + noiseStd * gaussNoise();
-      let detected = noisySNR >= detectionThreshold;
-
-      // ── Heuristic SNR Overrides (User Requirement) ───────────────────────────
-      if (dp.snrDb >= 15) {
-        // Reliable detection at SNR ≥ 15dB regardless of distance.
-        detected = true;
-      } else if (dp.snrDb >= 5) {
-        // Below 15dB, detection probability decreases gradually.
-        const t = (dp.snrDb - 5) / 10; // 0 (at 5dB) to 1 (at 15dB)
-        const prob = 0.3 + 0.7 * t;
-        if (Math.random() > prob) detected = false;
-        // Never make all targets completely invisible above 10dB SNR.
-        if (dp.snrDb >= 10 && !detected && Math.random() < 0.6) detected = true;
-      } else {
-        // Below 5dB, far targets become undetectable.
-        const isClose = distM < 0.3 * DETECTION_RANGE_M;
-        if (!isClose) {
-          detected = false;
+        // Compute clean signal for this target to check against detection threshold.
+        // Targets that are too weak (far away at low SNR) are missed.
+        const distM = Math.max(0.1, t.distanceM);
+        let cleanSignal: number;
+        if (currentMode === "mechanical") {
+          const frac = deltaDeg / effectiveHalf;
+          cleanSignal =
+            (dp.amplitude * Math.max(0, Math.cos((frac * Math.PI) / 2))) /
+            (distM * distM);
         } else {
-          // Close targets (within 30% of max range) still have a chance.
-          if (Math.random() > 0.4) detected = false;
+          const sv = sincNorm(deltaDeg / beamWidthDeg);
+          cleanSignal = (dp.amplitude * sv * sv) / (distM * distM);
+        }
+
+        // ── Single Source of Truth ──────────────────────────────────────────────
+        // All detection checks are simplified. Radar purely detects based on backend
+        // physics, which means noise modeling must be applied strictly via the API response.
+        let detected = cleanSignal > 0.001;
+
+        if (detected) hitIds.add(t.id);
+
+        // Leading-edge recording: record when beam first enters AND detection succeeds
+        if (!wasInside && detected) {
+          // Spike is recorded at target.compassAngle on chart
+          const targetSlot =
+            Math.round((((targetAngleDeg % 360) + 360) % 360) * 2) % ANGLE_SLOTS;
+          const spikeAbs = Math.max(
+            dp.amplitude * 0.35,
+            Math.min(dp.amplitude * 1.15, cleanSignal * 12),
+          );
+          angleChartBufRef.current[targetSlot] = Math.max(
+            angleChartBufRef.current[targetSlot],
+            spikeAbs,
+          );
+          const sideSpike = spikeAbs * 0.45;
+          const left = (targetSlot - 1 + ANGLE_SLOTS) % ANGLE_SLOTS;
+          const right = (targetSlot + 1) % ANGLE_SLOTS;
+          angleChartBufRef.current[left] = Math.max(
+            angleChartBufRef.current[left],
+            sideSpike,
+          );
+          angleChartBufRef.current[right] = Math.max(
+            angleChartBufRef.current[right],
+            sideSpike,
+          );
+
+          const elapsedS = (nowMs - simStartMs.current) / 1000;
+          const pt: DetectionPoint = {
+            detectedAtMs: nowMs,
+            elapsedS: parseFloat(elapsedS.toFixed(3)),
+            distanceM: parseFloat(Math.max(0, t.distanceM).toFixed(3)),
+            angleDeg: parseFloat(targetAngleDeg.toFixed(1)),
+            targetId: t.id,
+            colorIdx: ti,
+          };
+          frameDetections.push(pt);
+          console.log(
+            `[Det] ti=${ti} dist=${t.distanceM.toFixed(2)}m angle=${targetAngleDeg.toFixed(1)}° detected=true`,
+          );
+        } else if (!wasInside && !detected) {
+          console.log(
+            `[Det] ti=${ti} dist=${t.distanceM.toFixed(2)}m angle=${targetAngleDeg.toFixed(1)}° detected=MISSED (below threshold)`,
+          );
         }
       }
-
-      if (detected) hitIds.add(t.id);
-
-      // Leading-edge recording: record when beam first enters AND detection succeeds
-      if (!wasInside && detected) {
-        // Spike is recorded at target.compassAngle on chart
-        const targetSlot =
-          Math.round((((targetAngleDeg % 360) + 360) % 360) * 2) % ANGLE_SLOTS;
-        const spikeAbs = Math.max(
-          dp.amplitude * 0.35,
-          Math.min(dp.amplitude * 1.15, cleanSignal * 12),
-        );
-        angleChartBufRef.current[targetSlot] = Math.max(
-          angleChartBufRef.current[targetSlot],
-          spikeAbs,
-        );
-        const sideSpike = spikeAbs * 0.45;
-        const left = (targetSlot - 1 + ANGLE_SLOTS) % ANGLE_SLOTS;
-        const right = (targetSlot + 1) % ANGLE_SLOTS;
-        angleChartBufRef.current[left] = Math.max(
-          angleChartBufRef.current[left],
-          sideSpike,
-        );
-        angleChartBufRef.current[right] = Math.max(
-          angleChartBufRef.current[right],
-          sideSpike,
-        );
-
-        const elapsedS = (nowMs - simStartMs.current) / 1000;
-        const pt: DetectionPoint = {
-          detectedAtMs: nowMs,
-          elapsedS: parseFloat(elapsedS.toFixed(3)),
-          distanceM: parseFloat(Math.max(0, t.distanceM).toFixed(3)),
-          angleDeg: parseFloat(targetAngleDeg.toFixed(1)),
-          targetId: t.id,
-          colorIdx: ti,
-        };
-        frameDetections.push(pt);
-        console.log(
-          `[Det] ti=${ti} dist=${t.distanceM.toFixed(2)}m angle=${targetAngleDeg.toFixed(1)}° SNR=${dp.snrDb}dB detected=true`,
-        );
-      } else if (!wasInside && !detected) {
-        console.log(
-          `[Det] ti=${ti} dist=${t.distanceM.toFixed(2)}m angle=${targetAngleDeg.toFixed(1)}° SNR=${dp.snrDb}dB detected=MISSED (below threshold)`,
-        );
-      }
+    } catch (e) {
+      console.warn("Radar detection loop error:", e);
     }
 
     // Remove stale entries for deleted targets
@@ -1495,54 +1448,7 @@ export default function SimulatorRadar() {
     }));
   }, [angleSamples]);
 
-  /** Beam Width Comparison: real AF for 8, 16, 32 elements, using current geometry. */
-  const beamWidthChartData = useMemo(() => {
-    const nConfigs = [8, 16, 32] as const;
-    const wavelength = Math.max(0.01, Number(params.wavelength ?? 1.0));
-    const spacingOverLambda = Number(params.spacing ?? 0.5) / wavelength;
-    const wType =
-      (params.apodizationEnabled ? params.windowType : "rectangular") ??
-      "rectangular";
-    const steeringDeg = Number(params.steeringAngleDeg ?? 0);
-    const geometry = params.geometry ?? "linear";
-    const radiusOverLambda = Math.max(0.5, Number(params.radius ?? 5));
-    const points = Array.from({ length: 181 }, (_, i) => -90 + i);
-    const raw: Record<string, number[]> = { n8: [], n16: [], n32: [] };
-    const peaks: Record<string, number> = { n8: 1e-9, n16: 1e-9, n32: 1e-9 };
-    for (const angleDeg of points) {
-      const relRad = degToRad(angleDeg);
-      for (const n of nConfigs) {
-        const w = makeWindowWeights(wType, n);
-        const phaseOff =
-          2 * Math.PI * spacingOverLambda * Math.sin(degToRad(steeringDeg));
-        const af = computeArrayFactor(
-          n,
-          spacingOverLambda,
-          relRad,
-          w,
-          phaseOff,
-          geometry,
-          radiusOverLambda,
-        );
-        raw[`n${n}`].push(af);
-        if (af > peaks[`n${n}`]) peaks[`n${n}`] = af;
-      }
-    }
-    return points.map((angleDeg, i) => ({
-      angle: angleDeg,
-      n8: parseFloat((raw.n8[i] / peaks.n8).toFixed(4)),
-      n16: parseFloat((raw.n16[i] / peaks.n16).toFixed(4)),
-      n32: parseFloat((raw.n32[i] / peaks.n32).toFixed(4)),
-    }));
-  }, [
-    params.spacing,
-    params.wavelength,
-    params.windowType,
-    params.apodizationEnabled,
-    params.steeringAngleDeg,
-    params.geometry,
-    params.radius,
-  ]);
+
 
   // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -1986,84 +1892,7 @@ export default function SimulatorRadar() {
           );
         })()}
 
-      {/* Configuration Trade-offs Panel */}
-      <div className="pt-4 border-t border-white/10 mt-4">
-        <button
-          onClick={() => setShowTradeoffs(!showTradeoffs)}
-          className="flex items-center justify-between w-full text-[10px] font-mono font-bold uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors group"
-        >
-          <span>Configuration Trade-offs</span>
-          <span className={`transform transition-transform ${showTradeoffs ? "rotate-180" : ""}`}>
-            ▼
-          </span>
-        </button>
 
-        {showTradeoffs && (
-          <div className="mt-3 space-y-3">
-            {(() => {
-              const n = Number(params.numElements || 32);
-              const dLambda = Number(params.spacing || 0.5);
-              // BW formula: ≈ 0.886λ / (N*d) radians, convert to degrees
-              const calculatedBW = (0.886 / (n * dLambda)) * (180 / Math.PI);
-              const snrLinear = Math.pow(10, (params.snrDb || 0) / 20);
-              const relRange = Math.min(DETECTION_RANGE_M, DETECTION_RANGE_M * (snrLinear / 20));
-              
-              return (
-                <>
-                  {/* Beam Width */}
-                  <div className="space-y-1">
-                    <Label className="text-[9px] font-mono text-muted-foreground uppercase opacity-70">Beam Width</Label>
-                    <div className="text-[11px] font-mono text-foreground flex justify-between">
-                      <span className="opacity-60 text-[9px]">≈ 0.886λ/(N×d)</span>
-                      <span className="text-primary font-bold">{calculatedBW.toFixed(2)}°</span>
-                    </div>
-                  </div>
-
-                  {/* Grating Lobes */}
-                  <div className="space-y-1">
-                    <Label className="text-[9px] font-mono text-muted-foreground uppercase opacity-70">Grating Lobes</Label>
-                    <div className={`text-[10px] font-mono flex items-center gap-1.5 ${dLambda > 0.5 ? "text-red-400" : "text-emerald-400"}`}>
-                      {dLambda > 0.5 ? (
-                        <>⚠️ Grating lobes present — reduce spacing below 0.5λ</>
-                      ) : (
-                        <>✓ No grating lobes</>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Back Lobe */}
-                  <div className="space-y-1">
-                    <Label className="text-[9px] font-mono text-muted-foreground uppercase opacity-70">Back Lobe</Label>
-                    <div className={`text-[10px] font-mono flex items-center gap-1.5 ${params.geometry === "linear" ? "text-orange-400" : "text-emerald-400"}`}>
-                      {params.geometry === "linear" ? (
-                        <>⚠️ Back lobe present — switch to Curved to eliminate</>
-                      ) : (
-                        <>✓ No back lobe</>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* SNR Detection Range */}
-                  <div className="space-y-1">
-                    <Label className="text-[9px] font-mono text-muted-foreground uppercase opacity-70">SNR Detection Range</Label>
-                    <div className="text-[10px] font-mono text-foreground">
-                      Reliable detection up to <span className="text-primary font-bold">≈ {relRange.toFixed(1)}m</span>
-                    </div>
-                  </div>
-
-                  {/* Resolution */}
-                  <div className="space-y-1">
-                    <Label className="text-[9px] font-mono text-muted-foreground uppercase opacity-70">Resolution</Label>
-                    <div className="text-[10px] font-mono text-foreground">
-                      Min separation: <span className="text-primary font-bold">{calculatedBW.toFixed(2)}°</span>
-                    </div>
-                  </div>
-                </>
-              );
-            })()}
-          </div>
-        )}
-      </div>
     </>
   );
 
@@ -2306,102 +2135,9 @@ export default function SimulatorRadar() {
           </div>
         </div>
 
-        {/* ── Beam Width Comparison ──────────────────────────────────────────── */}
-        <div className="glass-panel p-3 flex flex-col">
-          <h3 className="text-[10px] font-mono font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-            Beam Width Comparison (8 / 16 / 32 Elements)
-          </h3>
-          <div className="flex-1 min-h-0">
-            {isInitialLoadRef.current ? (
-              <div className="flex items-center justify-center h-full">
-                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary" />
-              </div>
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart
-                  data={beamWidthChartData}
-                  margin={{ top: 8, right: 16, bottom: 28, left: 8 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} />
-                  <XAxis
-                    dataKey="angle"
-                    type="number"
-                    domain={[-90, 90]}
-                    tickCount={7}
-                    tick={axisTickStyle}
-                    label={{
-                      value: "Angle from boresight (°)",
-                      position: "bottom",
-                      offset: 8,
-                      style: axisLabelStyle,
-                    }}
-                    tickFormatter={(v: number) => `${v}°`}
-                  />
-                  <YAxis
-                    domain={[0, 1]}
-                    tick={axisTickStyle}
-                    label={{
-                      value: "Normalised AF",
-                      angle: -90,
-                      position: "insideLeft",
-                      style: axisLabelStyle,
-                    }}
-                    tickFormatter={(v: number) => v.toFixed(1)}
-                  />
-                  <Tooltip
-                    contentStyle={tooltipStyle}
-                    formatter={(value: unknown, name: unknown) => [
-                      typeof value === "number" ? value.toFixed(4) : "0",
-                      String(name),
-                    ]}
-                    labelFormatter={(label: unknown) => `${label}°`}
-                  />
-                  <Legend wrapperStyle={legendStyle} />
-                  <ReferenceLine
-                    y={0.7071}
-                    stroke="hsla(240,8%,55%,0.45)"
-                    strokeDasharray="6 3"
-                    label={{
-                      value: "−3 dB",
-                      position: "insideRight",
-                      style: {
-                        fill: "hsl(240,8%,55%)",
-                        fontSize: 9,
-                        fontFamily: "JetBrains Mono",
-                      },
-                    }}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="n8"
-                    stroke="hsl(320,75%,62%)"
-                    strokeWidth={2}
-                    dot={false}
-                    isAnimationActive={false}
-                    name="8 el. (wide)"
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="n16"
-                    stroke="hsl(200,80%,62%)"
-                    strokeWidth={2}
-                    dot={false}
-                    isAnimationActive={false}
-                    name="16 el. (medium)"
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="n32"
-                    stroke="hsl(130,75%,55%)"
-                    strokeWidth={2}
-                    dot={false}
-                    isAnimationActive={false}
-                    name="32 el. (narrow)"
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            )}
-          </div>
+        {/* ── Empty Slot (Removed Beam Comparison) ─────────────────────────── */}
+        <div className="glass-panel p-3 flex flex-col items-center justify-center border-dashed border-white/5 bg-transparent">
+           <p className="text-[10px] font-mono text-muted-foreground/30 uppercase tracking-widest">Reserved for Future Diagnostics</p>
         </div>
       </div>
     </MainLayout>

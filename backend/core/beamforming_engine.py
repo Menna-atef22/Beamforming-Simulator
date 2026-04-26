@@ -346,8 +346,8 @@ class BeamformingEngine:
                     continue
                 
                 steer = steering_angles_deg[n] if steering_angles_deg is not None else steering_angle_deg
-                # Invert sign so positive steering moves beam toward +X (right)
-                steering_angle_rad = math.radians(-steer)
+                # Steering angle in radians (positive angle, no inversion)
+                steering_angle_rad = math.radians(steer)
                 
                 # phase_n = +2π * (x_n*sin(theta) + y_n*cos(theta)) / λ  (positive phase advance)
                 if self.array.geometry == "curved":
@@ -387,7 +387,6 @@ class BeamformingEngine:
     def run_simulation(
         self,
         steering_angle_deg: float = 0,
-        enable_noise: bool = False,
         grid_size: int = None,
         angle_step: float = None,
         profile_depth: float = None,
@@ -396,11 +395,10 @@ class BeamformingEngine:
         """Execute complete beamforming simulation.
         
         Orchestrates computation of beam patterns, metrics, 2D interference map,
-        and 1D signal profile with optional noise injection.
+        and 1D signal profile.
         
         Args:
             steering_angle_deg: Main beam steering angle in degrees (default: 0).
-            enable_noise: Whether to add SNR-based noise (default: False).
             grid_size: Grid resolution for 2D map (default: 60).
             angle_step: Angular step for beam pattern (default: 1.0°).
             profile_depth: Depth for 1D signal profile (default: 2.0 m).
@@ -455,8 +453,7 @@ class BeamformingEngine:
         interference_map = self.interference_map_engine.compute_2d_map(
             steering_angle_deg=steering_angle_deg,
             grid_size=grid_size,
-            extent=dynamic_extent,
-            apply_noise=enable_noise
+            extent=dynamic_extent
         )
 
         # Compute Fraunhofer (far-field) distance and choose profile depth

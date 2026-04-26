@@ -1,4 +1,4 @@
-import { useMemo, useRef, useEffect, useState, useCallback } from "react";
+import { useMemo, useRef, useEffect, useState, useCallback, useDeferredValue } from "react";
 import MainLayout from "@/components/layout/MainLayout";
 import ControlPanel from "@/components/ControlPanel";
 import { BeamformingParams } from "@/types/beamforming";
@@ -81,7 +81,6 @@ const makeTowerParams = (id: number, x: number, y: number) => ({
   amplitude: 1.0,
   snr_db: 30,
   window_type: "rectangular" as const,
-  noise_enabled: true,
   apodization_enabled: false,
   geometry: "linear" as const,
   radius: 50,
@@ -96,7 +95,6 @@ const defaultParams: BeamformingParams & Record<string, any> = {
   amplitude: 1.0,
   snrDb: 30,
   windowType: "rectangular",
-  noiseEnabled: true,
   apodizationEnabled: false,
   frequency: 28e9,
   geometry: "linear",
@@ -125,7 +123,6 @@ export default function Simulator5G() {
       amplitude: defaultParams.amplitude,
       snr_db: defaultParams.snrDb,
       window_type: defaultParams.windowType,
-      noise_enabled: defaultParams.noiseEnabled,
       apodization_enabled: defaultParams.apodizationEnabled,
       geometry: defaultParams.geometry ?? "linear",
       radius: Number.isFinite(Number(defaultParams.radius)) ? Number(defaultParams.radius) : 50,
@@ -384,7 +381,6 @@ export default function Simulator5G() {
     amplitude: Number((tower as any)?.amplitude ?? defaultParams.amplitude),
     snrDb: Number((tower as any)?.snr_db ?? defaultParams.snrDb),
     windowType: ((tower as any)?.window_type ?? defaultParams.windowType),
-    noiseEnabled: Boolean((tower as any)?.noise_enabled ?? defaultParams.noiseEnabled),
     apodizationEnabled: Boolean((tower as any)?.apodization_enabled ?? defaultParams.apodizationEnabled),
     frequency: Number((tower as any)?.frequency != null
       ? (tower as any).frequency / 1e9  // convert Hz → GHz for ControlPanel slider
@@ -444,8 +440,6 @@ export default function Simulator5G() {
           return { ...tower, snr_db: Number(value) };
         case "windowType":
           return { ...tower, window_type: value as any };
-        case "noiseEnabled":
-          return { ...tower, noise_enabled: Boolean(value) };
         case "apodizationEnabled":
           return { ...tower, apodization_enabled: Boolean(value) };
         case "frequency":
@@ -1579,6 +1573,10 @@ export default function Simulator5G() {
 
   const activeTowerIds = useMemo(() => new Set<number>(Array.from(liveConnectedTowerByUserId.values())), [liveConnectedTowerByUserId]);
 
+  // Defer the SNR value so the slider stays fluid while the heavy heatmap
+  // useMemo catches up in the background (React 18 concurrent feature).
+  const deferredSnrDb = useDeferredValue(params.snrDb);
+
   const interferenceHeatmapData = useMemo(() => {
     const GRID_N = 180;
     const C = 3e8;
@@ -1795,6 +1793,7 @@ export default function Simulator5G() {
   }, [
     localUsers,
     localTowers,
+    deferredSnrDb,
     liveConnectedTowerByUserId,
     elementAllocsByTowerId,
     mapViewport,

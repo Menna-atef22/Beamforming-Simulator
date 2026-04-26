@@ -1,8 +1,28 @@
+# SINGLE SOURCE OF TRUTH FOR ALL NOISE CALCULATIONS — DO NOT ADD NOISE ANYWHERE ELSE
 """Gaussian noise modeling based on SNR - OOP implementation"""
 
 import math
 import random
 from typing import List, Optional
+
+_last_snr: Optional[float] = None
+_last_noise: float = 0.0
+
+def get_noise_amplitude(snr_db: float) -> float:
+    """Centralized utility for SNR-to-noise multiplier."""
+    global _last_snr, _last_noise
+    if snr_db == _last_snr:
+        return _last_noise
+    
+    capped = min(snr_db, 100)
+    if math.isinf(capped) or capped >= 100:
+        _last_snr = snr_db
+        _last_noise = 0.0
+        return 0.0
+        
+    _last_snr = snr_db
+    _last_noise = math.pow(10, -capped / 10)
+    return _last_noise
 
 
 class NoiseModel:
@@ -15,15 +35,19 @@ class NoiseModel:
     Attributes:
         snr_db: Signal-to-Noise Ratio in decibels.
         snr_linear: SNR converted to linear scale (10^(SNR_dB/10)).
-        noise_enabled: Whether noise should be applied (default: True).
     """
+
+    # Precomputed Gaussian cache for fast per-pixel noise without repeated RNG.
+    # Stores N(0,1) samples in a flat list of length CACHE_W*CACHE_H.
+    _noise_cache: Optional[List[float]] = None
+    _noise_cache_w: int = 256
+    _noise_cache_h: int = 256
     
-    def __init__(self, snr_db: float, noise_enabled: bool = True) -> None:
+    def __init__(self, snr_db: float) -> None:
         """Initialize NoiseModel with SNR setting.
         
         Args:
             snr_db: SNR in decibels. Can be float('inf') for no noise.
-            noise_enabled: Whether to enable noise (default: True).
         
         Raises:
             ValueError: If snr_db is negative (not inf).
@@ -32,49 +56,72 @@ class NoiseModel:
             raise ValueError("snr_db must be >= 0 or inf")
         
         self.snr_db: float = snr_db
+        self.noise_multiplier = get_noise_amplitude(snr_db)
         
-        # Convert to linear scale: SNR_linear = 10^(SNR_dB/10)
-        if math.isinf(snr_db):
-            self.snr_linear: float = float('inf')
-        else:
-            self.snr_linear = math.pow(10, snr_db / 10)
-        
-        self.noise_enabled: bool = noise_enabled
+        # Noise is controlled purely by snr_db (inf => no noise).
+    
+    # Cached Box-Muller spare — avoids discarding the second generated sample.
+    _spare: Optional[float] = None
 
-    @property
-    def snr_amplitude_ratio(self) -> float:
-        """Return amplitude-domain SNR ratio: 10^(SNR_dB/20)."""
-        if math.isinf(self.snr_db):
-            return float("inf")
-        return math.pow(10, self.snr_db / 20.0)
-    
-    def enable_noise(self) -> None:
-        """Enable noise addition."""
-        self.noise_enabled = True
-    
-    def disable_noise(self) -> None:
-        """Disable noise addition (equivalent to infinite SNR)."""
-        self.noise_enabled = False
-    
-    @staticmethod
-    def _gaussian_random() -> float:
-        """Generate Gaussian random number using Box-Muller transform.
+    @classmethod
+    def _gaussian_random(cls) -> float:
+        """Generate Gaussian random number using cached Box-Muller transform.
         
-        Converts two uniform random variables to one Gaussian random variable
-        with zero mean and unit variance (N(0,1)).
+        Generates two independent N(0,1) samples per Box-Muller call and caches
+        the second one, halving the number of expensive log/cos operations.
         
         Returns:
             Gaussian random number with mean=0, variance=1.
         """
+        if cls._spare is not None:
+            val = cls._spare
+            cls._spare = None
+            return val
+        
         u = 0.0
-        v = 0.0
         while u == 0:
             u = random.random()
-        while v == 0:
-            v = random.random()
+        v = random.random()
         
-        # Box-Muller formula: sqrt(-2*ln(u)) * cos(2π*v)
-        return math.sqrt(-2.0 * math.log(u)) * math.cos(2.0 * math.pi * v)
+        # Box-Muller: produces two independent samples.
+        mag = math.sqrt(-2.0 * math.log(u))
+        cls._spare = mag * math.sin(2.0 * math.pi * v)
+        return mag * math.cos(2.0 * math.pi * v)
+
+    @classmethod
+    def _init_noise_cache(cls) -> None:
+        """Initialize a deterministic cache of N(0,1) samples."""
+        if cls._noise_cache is not None:
+            return
+        rng = random.Random(1337)
+        n = cls._noise_cache_w * cls._noise_cache_h
+        # Use Box-Muller with the local RNG so results are deterministic.
+        out: List[float] = []
+        out_extend = out.extend
+        for _ in range(n // 2):
+            u1 = max(1e-12, rng.random())
+            u2 = rng.random()
+            r = math.sqrt(-2.0 * math.log(u1))
+            theta = 2.0 * math.pi * u2
+            out_extend([r * math.cos(theta), r * math.sin(theta)])
+        if len(out) < n:
+            out.append(0.0)
+        cls._noise_cache = out[:n]
+
+    @classmethod
+    def cached_gaussian(cls, xi: int, yi: int, channel: int = 0) -> float:
+        """Fetch a cached N(0,1) sample for a pixel index and channel.
+
+        channel=0/1 can be used to get decorrelated-ish I/Q samples.
+        """
+        cls._init_noise_cache()
+        w = cls._noise_cache_w
+        h = cls._noise_cache_h
+        # Mix xi/yi/channel into the cache index; keep it cheap/deterministic.
+        x = int(xi) % w
+        y = int(yi) % h
+        idx = (y * w + x + (channel * 9973)) % (w * h)
+        return cls._noise_cache[idx] if cls._noise_cache is not None else 0.0
     
     def compute_noise_power(self, signal_power: float) -> float:
         """Compute noise power given signal power and SNR.
@@ -93,22 +140,11 @@ class NoiseModel:
         if signal_power < 0:
             raise ValueError("signal_power must be >= 0")
         
-        if math.isinf(self.snr_linear) or self.snr_linear == 0:
+        if self.noise_multiplier == 0.0:
             return 0.0
         
-        return signal_power / self.snr_linear
+        return signal_power * self.noise_multiplier
 
-    def compute_noise_std(self, signal_power: float) -> float:
-        """Compute noise standard deviation for a real-valued signal.
-
-        For AWGN with target power-domain SNR:
-            sigma^2 = P_noise = P_signal / SNR_linear
-        """
-        noise_power = self.compute_noise_power(signal_power)
-        if noise_power <= 0:
-            return 0.0
-        return math.sqrt(noise_power)
-    
     def get_noise_power(self, signal_power: float = 1.0) -> float:
         """Get noise power (normalized or relative to signal power).
         
@@ -123,83 +159,22 @@ class NoiseModel:
         """
         return self.compute_noise_power(signal_power)
     
-    def add_noise_to_scalar(self, signal: float) -> float:
-        """Add Gaussian noise to a scalar signal.
-        
-        Noise is generated based on signal power and configured SNR:
-        noisy_signal = signal + gaussian_noise * sqrt(noise_power)
-        
-        Args:
-            signal: Scalar signal value.
-        
-        Returns:
-            Signal with added noise (or unchanged if noise disabled).
-        """
-        if not self.noise_enabled or math.isinf(self.snr_linear):
-            return signal
-        
-        signal_power = signal * signal if signal != 0 else 1e-10
-        noise_power = self.compute_noise_power(signal_power)
-        
-        if noise_power <= 0:
-            return signal
-        
-        # Generate Gaussian noise: N(0, noise_power)
-        gaussian_var = self._gaussian_random()
-        noise = gaussian_var * math.sqrt(noise_power)
-        
-        return signal + noise
-
-    def add_awgn_to_scalar(
-        self,
-        signal: float,
-        reference_signal_power: Optional[float] = None,
-        min_reference_power: float = 1e-12
-    ) -> float:
-        """Add AWGN using a stable reference signal power.
-
-        Unlike add_noise_to_scalar(), this keeps a consistent noise floor by
-        using reference_signal_power (if provided) instead of |signal|^2.
-        """
-        if not self.noise_enabled or math.isinf(self.snr_linear):
-            return signal
-
-        if reference_signal_power is None:
-            reference_signal_power = signal * signal
-        reference_signal_power = max(float(reference_signal_power), min_reference_power)
-        sigma = self.compute_noise_std(reference_signal_power)
-        if sigma <= 0:
-            return signal
-        return signal + self._gaussian_random() * sigma
+    def add_noise_to_scalar(self, signal: float, reference_power: float = 1.0) -> float:
+        """Add Gaussian noise to a scalar signal."""
+        if self.noise_multiplier == 0.0: return signal
+        noise_power = self.compute_noise_power(reference_power)
+        # Skip imperceptible noise (SNR so high that std < 1e-9)
+        if noise_power < 1e-18: return signal
+        return signal + self._gaussian_random() * math.sqrt(noise_power)
     
-    def add_noise_to_complex(self, real: float, imag: float) -> tuple:
-        """Add Gaussian noise to complex signal (I/Q components).
-        
-        Applies independent noise to real and imaginary parts.
-        
-        Args:
-            real: Real (I) component.
-            imag: Imaginary (Q) component.
-        
-        Returns:
-            Tuple of (noisy_real, noisy_imag).
-        """
-        if not self.noise_enabled or math.isinf(self.snr_linear):
-            return (real, imag)
-        
-        # Signal power: |signal|^2 = real^2 + imag^2
-        signal_power = real*real + imag*imag
-        noise_power = self.compute_noise_power(signal_power)
-        
-        if noise_power <= 0:
-            return (real, imag)
-        
-        # Split total complex noise power across I/Q components equally.
-        component_sigma = math.sqrt(noise_power / 2.0)
-        noise_real = self._gaussian_random() * component_sigma
-        noise_imag = self._gaussian_random() * component_sigma
-        
-        return (real + noise_real, imag + noise_imag)
+    def add_noise_to_complex(self, real: float, imag: float, reference_power: float = 1.0) -> tuple:
+        """Add Gaussian noise to complex signal (I/Q components)."""
+        if self.noise_multiplier == 0.0: return (real, imag)
+        noise_power = self.compute_noise_power(reference_power)
+        # Skip imperceptible noise
+        if noise_power < 1e-18: return (real, imag)
+        noise_std = math.sqrt(noise_power)
+        return (real + self._gaussian_random() * noise_std, imag + self._gaussian_random() * noise_std)
     
     def add_noise_to_array(self, signals: List[float]) -> List[float]:
         """Add Gaussian noise to an array of signals.
@@ -212,15 +187,14 @@ class NoiseModel:
         """
         if not signals:
             return []
-        if not self.noise_enabled or math.isinf(self.snr_linear):
+        if self.noise_multiplier == 0.0:
             return list(signals)
-
-        avg_signal_power = sum(s * s for s in signals) / max(len(signals), 1)
-        avg_signal_power = max(avg_signal_power, 1e-12)
-        sigma = self.compute_noise_std(avg_signal_power)
-        if sigma <= 0:
+        # Use a stable reference power to avoid noise vanishing in dark regions.
+        reference_power = 1.0
+        noise_power = self.compute_noise_power(reference_power)
+        if noise_power <= 0:
             return list(signals)
-
+        sigma = math.sqrt(noise_power)
         return [s + self._gaussian_random() * sigma for s in signals]
     
     def set_snr(self, snr_db: float) -> None:
@@ -236,10 +210,15 @@ class NoiseModel:
             raise ValueError("snr_db must be >= 0 or inf")
         
         self.snr_db = snr_db
-        if math.isinf(snr_db):
-            self.snr_linear = float('inf')
-        else:
-            self.snr_linear = math.pow(10, snr_db / 10)
+        self.noise_multiplier = get_noise_amplitude(snr_db)
+
+    def enable_noise(self) -> None:
+        """Enable noise addition."""
+        self.noise_multiplier = get_noise_amplitude(self.snr_db)
+
+    def disable_noise(self) -> None:
+        """Disable noise addition."""
+        self.noise_multiplier = 0.0
 
 # Module-level functions for backward compatibility
 def gaussian_random() -> float:
@@ -262,7 +241,7 @@ def add_noise(signal: float, snr_db: float = float('inf')) -> float:
         Signal with added noise.
     """
     noise_model = NoiseModel(snr_db)
-    return noise_model.add_noise_to_scalar(signal)
+    return noise_model.add_noise_to_scalar(signal, reference_power=1.0)
 
 def add_noise_to_array(signals: list, snr_db: float = float('inf')) -> list:
     """Add Gaussian noise to an array of signals.

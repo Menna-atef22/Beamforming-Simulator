@@ -666,10 +666,8 @@ class SimulatorUltrasound(BeamformingEngine):
             UltrasoundBModeResult with image and tissue structure.
         """
         # Update noise settings
-        if enable_noise:
-            self.noise.enable_noise()
-        else:
-            self.noise.disable_noise()
+        if not enable_noise:
+            self.noise.set_snr(float("inf"))
         
         # Convert steering angle to radians
         steer_rad = math.radians(steering_angle_deg)
@@ -890,9 +888,9 @@ class SimulatorUltrasound(BeamformingEngine):
             UltrasoundDopplerResult with velocity spectrum.
         """
         if enable_noise:
-            self.noise.enable_noise()
+            pass
         else:
-            self.noise.disable_noise()
+            self.noise.set_snr(float("inf"))
         
         # Generate frequency axis (Doppler shift)
         nyquist_freq = 2 * self.signal.frequency * max_velocity_mms / (1000 * self.SPEED_OF_SOUND_TISSUE)

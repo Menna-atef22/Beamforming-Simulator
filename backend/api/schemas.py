@@ -18,7 +18,7 @@ class BeamformingParamsSchema(BaseModel):
     wavelength: Optional[float] = Field(default=None, gt=0, description="Signal wavelength in m (used only when frequency is absent)")
     steering_angle_deg: float = Field(default=0, ge=-90, le=90, description="Beam steering angle in degrees")
     amplitude: float = Field(default=1.0, gt=0, description="Signal amplitude")
-    snr_db: float = Field(default=30, ge=-100, le=200, description="Signal-to-noise ratio in dB")
+    snr_db: float = Field(default=30, ge=-100, le=1000, description="Signal-to-noise ratio in dB")
     window_type: WindowType = Field(default="rectangular", description="Apodization window type")
     noise_enabled: bool = Field(default=False, description="Enable noise simulation")
     apodization_enabled: bool = Field(default=False, description="Enable window function")
@@ -152,6 +152,7 @@ class RadarResponseSchema(BaseModel):
     returns: List[float]
     targets: List[RadarTargetSchema]
     beam_width_deg: float
+    noise_buffer: List[float] = Field(default_factory=list)
 
 
 class RadarResultSchema(BaseModel):
@@ -246,7 +247,7 @@ class TowerPositionSchema(BaseModel):
     frequency: Optional[float] = Field(default=None, gt=0, description="Per-tower frequency in Hz")
     steering_angle_deg: Optional[float] = Field(default=None, ge=-90, le=90, description="Per-tower steering angle")
     amplitude: Optional[float] = Field(default=None, gt=0, description="Per-tower amplitude")
-    snr_db: Optional[float] = Field(default=None, ge=-100, le=200, description="Per-tower SNR in dB")
+    snr_db: Optional[float] = Field(default=None, ge=-100, le=1000, description="Per-tower SNR in dB")
     window_type: Optional[WindowType] = Field(default=None, description="Per-tower window type")
     noise_enabled: Optional[bool] = Field(default=None, description="Per-tower noise toggle")
     apodization_enabled: Optional[bool] = Field(default=None, description="Per-tower apodization toggle")
@@ -260,7 +261,7 @@ class FiveGParamsSchema(BaseModel):
     num_elements: int = Field(default=16, ge=4, le=64, description="Antenna elements per tower")
     spacing: float = Field(default=0.5, gt=0, description="Element spacing in wavelengths")
     frequency: float = Field(default=28e9, gt=0, description="Operating frequency in Hz")
-    snr_db: float = Field(default=30, ge=-100, le=200, description="SNR in dB")
+    snr_db: float = Field(default=30, ge=-100, le=1000, description="SNR in dB")
     auto_steer: bool = Field(default=True, description="Auto-steer towers toward nearest user")
     enable_noise: bool = Field(default=False, description="Add noise to simulation")
     grid_size: int = Field(default=80, ge=16, le=360, description="Angle grid resolution")
@@ -288,7 +289,7 @@ class RadarParamsSchema(BaseModel):
     num_elements: int = Field(default=32, ge=8, le=128, description="Antenna elements")
     spacing: float = Field(default=0.5, gt=0, description="Element spacing in wavelengths")
     frequency: float = Field(default=10e9, gt=0, description="Operating frequency in Hz")
-    snr_db: float = Field(default=15, ge=-100, le=200, description="SNR in dB")
+    snr_db: float = Field(default=15, ge=-100, le=1000, description="SNR in dB")
     steering_angle_deg: float = Field(default=0, ge=-180, le=180, description="Beam steering angle")
     scan_range_deg: float = Field(default=360, gt=0, le=360, description="Angular scan range")
     enable_noise: bool = Field(default=True, description="Add noise and clutter")
@@ -316,7 +317,7 @@ class UltrasoundParamsSchema(BaseModel):
     num_elements: int = Field(default=64, ge=32, le=256, description="Array elements")
     spacing: float = Field(default=0.3, gt=0, description="Element spacing in wavelengths")
     frequency: float = Field(default=5e6, gt=0, description="Ultrasound frequency in Hz")
-    snr_db: float = Field(default=25, ge=-100, le=200, description="SNR in dB")
+    snr_db: float = Field(default=25, ge=-100, le=1000, description="SNR in dB")
     window_type: WindowType = Field(default="rectangular", description="Apodization window type")
     steering_angle_deg: float = Field(default=0, ge=-90, le=90, description="Beam steering angle in degrees")
     max_depth_mm: float = Field(default=100, gt=0, description="Maximum imaging depth in mm")

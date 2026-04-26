@@ -3,6 +3,7 @@
 import math
 from typing import List, Optional, Tuple
 from dataclasses import dataclass
+import numpy as np
 
 
 @dataclass
@@ -59,8 +60,7 @@ class InterferenceMap:
         self,
         steering_angle_deg: float,
         grid_size: int = 80,
-        extent: float = 5.0,
-        apply_noise: bool = False
+        extent: float = 5.0
     ) -> InterferenceMapResult:
         """Compute 2D interference map at all grid points.
         
@@ -72,8 +72,6 @@ class InterferenceMap:
             steering_angle_deg: Main beam steering angle in degrees.
             grid_size: Resolution of grid (default: 80x80 points).
             extent: Spatial extent in x-direction: ±extent meters (default: 5.0).
-            apply_noise: Whether to apply SNR-based noise (default: False).
-        
         Returns:
             InterferenceMapResult with computed 2D field pattern.
         
@@ -85,8 +83,8 @@ class InterferenceMap:
         if extent <= 0:
             raise ValueError("extent must be > 0")
         
-        # Invert steering sign so frontend positive angle steers to +X (right)
-        steering_angle_rad = math.radians(-steering_angle_deg)
+        # Steering angle in radians (positive angle, no inversion)
+        steering_angle_rad = math.radians(steering_angle_deg)
         
         # Compute x and y coordinate ranges
         x_range = []
@@ -100,100 +98,89 @@ class InterferenceMap:
             # Y: positive depth into medium (0 to extent)
             y = (extent * i) / (grid_size - 1)
             y_range.append(y)
-        
-        # Compute grid of field magnitudes
-        grid = []
-        max_val = 0.0
-        min_val = float('inf')
-        
+
+        # ── Vectorized field summation ──────────────────────────────────────────
         # Get element positions and weights
         element_positions = self.array.get_element_positions()
         weights = self.window.get_weights()
-
-        # Normalization: prevent amplitudes from growing with N by normalizing
-        # coherent sum by the total weight (sum of element weights).
         total_weight = sum(weights) if weights else 1.0
         if total_weight <= 0:
             total_weight = 1.0
-        
-        for yi in range(grid_size):
-            row = []
-            py = y_range[yi]
-            
-            for xi in range(grid_size):
-                px = x_range[xi]
-                
-                # Compute complex field at this grid point
-                real_sum = 0.0
-                imag_sum = 0.0
-                
-                for n, (elem_x, elem_y) in enumerate(element_positions):
-                    # Distance from element to observation point
-                    dx = px - elem_x
-                    dy = py - elem_y
-                    distance = math.sqrt(dx * dx + dy * dy)
-                    
-                    # Avoid singularity at element location
-                    if distance < 1e-6:
-                        continue
-                    
-                    if self.array.geometry == "curved":
-                        steering_phase = 2.0 * math.pi * (
-                            elem_x * math.cos(steering_angle_rad) + elem_y * math.sin(steering_angle_rad)
-                        ) / self.array.wavelength
-                    else:
-                        steering_phase = 2.0 * math.pi * (
-                            elem_x * math.sin(steering_angle_rad) + elem_y * math.cos(steering_angle_rad)
-                        ) / self.array.wavelength
-                    
-                    # Propagation phase: k * distance
-                    propagation_phase = self.array.wave_number * distance
-                    
-                    # Total phase at this element
-                    total_phase = propagation_phase + steering_phase
-                    
-                    # Amplitude includes: element weight, apodization, path loss (1/r)
-                    # Normalize by total_weight to keep values comparable when N grows
-                    elem_factor = 1.0
-                    if self.array.geometry == "curved":
-                        # Angle to the pixel from the element
-                        angle_to_pixel = math.atan2(py - elem_y, px - elem_x)
-                        # Element facing angle relative to broadside
-                        center = (self.array.num_elements - 1) / 2.0
-                        alpha_n = ((n - center) * self.array.spacing * self.array.wavelength) / (self.array.radius * self.array.wavelength)
-                        elem_factor = max(0.0, math.cos(angle_to_pixel - alpha_n))
-                        
-                    element_amplitude = (weights[n] * elem_factor * self.signal.amplitude / math.sqrt(distance)) / total_weight
-                    
-                    # Complex field contribution from this element
-                    real_sum += element_amplitude * math.cos(total_phase)
-                    imag_sum += element_amplitude * math.sin(total_phase)
-                
-                # Magnitude of complex field
-                magnitude = math.sqrt(real_sum * real_sum + imag_sum * imag_sum)
-                
-                # Apply noise if enabled
-                if apply_noise:
-                    # Use a stable reference power so noise floor remains
-                    # spatially consistent for a given SNR setting.
-                    ref_power = max((self.signal.amplitude ** 2), 1e-12)
-                    magnitude = self.noise.add_awgn_to_scalar(
-                        magnitude,
-                        reference_signal_power=ref_power
-                    )
-                
-                # Ensure non-negative magnitude
-                magnitude = max(0.0, magnitude)
-                
-                # Track min/max
-                if magnitude > max_val:
-                    max_val = magnitude
-                if magnitude < min_val:
-                    min_val = magnitude
-                
-                row.append(magnitude)
-            
-            grid.append(row)
+
+        # Build 2D coordinate grids  [grid_size × grid_size]
+        px_grid = np.array(x_range, dtype=np.float64)               # shape (G,)
+        py_grid = np.array(y_range, dtype=np.float64)               # shape (G,)
+        PX = np.tile(px_grid[np.newaxis, :], (grid_size, 1))        # (G, G)
+        PY = np.tile(py_grid[:, np.newaxis], (1, grid_size))        # (G, G)
+
+        real_matrix = np.zeros((grid_size, grid_size), dtype=np.float64)
+        imag_matrix = np.zeros((grid_size, grid_size), dtype=np.float64)
+
+        for n, (elem_x, elem_y) in enumerate(element_positions):
+            # Distance from this element to every grid point  (G, G)
+            DX = PX - elem_x
+            DY = PY - elem_y
+            dist = np.sqrt(DX * DX + DY * DY)
+
+            # Mask points that are too close to avoid singularities
+            valid = dist >= 1e-6
+
+            # Steering phase (scalar per element)
+            if self.array.geometry == "curved":
+                steer_ph = 2.0 * math.pi * (
+                    elem_x * math.cos(steering_angle_rad) +
+                    elem_y * math.sin(steering_angle_rad)
+                ) / self.array.wavelength
+            else:
+                steer_ph = 2.0 * math.pi * (
+                    elem_x * math.sin(steering_angle_rad) +
+                    elem_y * math.cos(steering_angle_rad)
+                ) / self.array.wavelength
+
+            # Propagation phase  (G, G)
+            prop_ph = self.array.wave_number * dist
+            total_phase = prop_ph + steer_ph
+
+            # Element factor (curved arrays: cosine directivity per element)
+            elem_factor = np.ones((grid_size, grid_size), dtype=np.float64)
+            if self.array.geometry == "curved":
+                angle_to_pixel = np.arctan2(DY, DX)            # (G, G)
+                center_n = (self.array.num_elements - 1) / 2.0
+                alpha_n = (
+                    (n - center_n) * self.array.spacing * self.array.wavelength
+                ) / (self.array.radius * self.array.wavelength)
+                elem_factor = np.maximum(0.0, np.cos(angle_to_pixel - alpha_n))
+
+            # Amplitude  (G, G), zero where too close
+            safe_dist = np.where(valid, dist, 1.0)
+            amplitude = np.where(
+                valid,
+                (weights[n] * elem_factor * self.signal.amplitude / np.sqrt(safe_dist)) / total_weight,
+                0.0
+            )
+
+            real_matrix += amplitude * np.cos(total_phase)
+            imag_matrix += amplitude * np.sin(total_phase)
+
+
+        # Apply Noise in Bulk (vectorized) using a global reference power = 1.0.
+        if self.noise.noise_multiplier > 0.0:
+            noise_power = self.noise.compute_noise_power(1.0)
+            # Avoid denormal floating-point slowdowns.
+            if noise_power >= 1e-18:
+                noise_std = math.sqrt(noise_power)
+                noise_r = np.random.normal(0.0, noise_std, real_matrix.shape)
+                noise_i = np.random.normal(0.0, noise_std, imag_matrix.shape)
+                real_matrix += noise_r
+                imag_matrix += noise_i
+
+        # Final Magnitude (vectorized)
+        magnitude_matrix = np.sqrt(real_matrix * real_matrix + imag_matrix * imag_matrix)
+        magnitude_matrix = np.maximum(magnitude_matrix, 0.0)
+
+        grid = magnitude_matrix.tolist()
+        max_val = float(magnitude_matrix.max()) if magnitude_matrix.size else 0.0
+        min_val = float(magnitude_matrix.min()) if magnitude_matrix.size else 0.0
         
         # Handle case where all values are identical (no variation)
         if min_val == float('inf'):

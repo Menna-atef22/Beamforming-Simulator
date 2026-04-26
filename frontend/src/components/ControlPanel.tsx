@@ -208,7 +208,7 @@ export default function ControlPanel({
           label={sliderLabels?.profileDepth ?? "Profile Depth"}
           value={params.profileDepth ?? 2.0}
           min={0.1}
-          max={100}
+          max={5}
           step={0.1}
           unit="m"
           onChange={(v) => onParamChange("profileDepth", v)}
@@ -221,7 +221,7 @@ export default function ControlPanel({
         label="SNR"
         value={params.snrDb}
         min={0}
-        max={60}
+        max={1000}
         step={1}
         unit="dB"
         onChange={(v) => onParamChange("snrDb", v)}
@@ -255,15 +255,6 @@ export default function ControlPanel({
 
       {/* Toggles */}
       <SectionHeader title="Toggles" />
-      <div className="flex justify-between items-center py-1">
-        <Label className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
-          Noise
-        </Label>
-        <Switch
-          checked={params.noiseEnabled}
-          onCheckedChange={(v) => onParamChange("noiseEnabled", v)}
-        />
-      </div>
       <div className="flex justify-between items-center py-1">
         <Label className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
           Apodization

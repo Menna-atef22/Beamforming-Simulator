@@ -62,7 +62,6 @@ class SimulationService:
             amplitude = params_dict.get("amplitude", 1.0)
             snr_db = params_dict.get("snr_db", 30)
             window_type = params_dict.get("window_type", "rectangular")
-            enable_noise = params_dict.get("enable_noise", False)
             apodization_enabled = params_dict.get("apodization_enabled", False)
             # If apodization is disabled, force rectangular window
             if not apodization_enabled:
@@ -81,7 +80,6 @@ class SimulationService:
 
             result = engine.run_simulation(
                 steering_angle_deg=steering_angle_deg,
-                enable_noise=enable_noise,
                 grid_size=grid_size,
                 profile_depth=profile_depth
             )
@@ -127,7 +125,6 @@ class SimulationService:
             frequency = params_dict.get("frequency", 28e9)
             snr_db = params_dict.get("snr_db", 30)
             auto_steer = params_dict.get("auto_steer", True)
-            enable_noise = params_dict.get("enable_noise", False)
             grid_size = params_dict.get("grid_size", 80)
             custom_users = params_dict.get("users")
             custom_towers = params_dict.get("towers")
@@ -191,7 +188,6 @@ class SimulationService:
             
             result = simulator.run(
                 auto_steer=auto_steer,
-                enable_noise=enable_noise,
                 grid_size=grid_size,
                 current_connections=current_connections,
             )

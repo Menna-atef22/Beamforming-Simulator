@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useDeferredValue } from "react";
 import MainLayout from "@/components/layout/MainLayout";
 import { BeamformingParams, PhantomEllipse, WindowType } from "@/types/beamforming";
 import { Slider } from "@/components/ui/slider";
@@ -108,10 +108,21 @@ const defaultPhantom: PhantomEllipse[] = [
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
-function gaussianNoise(std: number) {
+// Cached Box-Muller: generates two independent Gaussian samples per call;
+// the spare is stored and returned on the next invocation, halving cost.
+let _spareGaussian: number | null = null;
+function gaussianNoise(std: number): number {
+  if (std <= 0) return 0;
+  if (_spareGaussian !== null) {
+    const val = _spareGaussian * std;
+    _spareGaussian = null;
+    return val;
+  }
   const u = Math.max(Math.random(), 1e-12);
-  const v = Math.max(Math.random(), 1e-12);
-  return std * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  const v = Math.random();
+  const mag = Math.sqrt(-2 * Math.log(u));
+  _spareGaussian = mag * Math.sin(2 * Math.PI * v);
+  return mag * Math.cos(2 * Math.PI * v) * std;
 }
 
 function windowWeights(windowType: WindowType, n: number) {
@@ -595,12 +606,6 @@ export default function SimulatorUltrasound() {
     signalPower /= samples;
     const signalRms = Math.sqrt(signalPower);
 
-    const snr = Math.max(params.snrDb, 0);
-    const noiseStd = snr <= 0 ? signalRms * 0.8 : signalRms / Math.max(snr, 1);
-    for (let i = 0; i < samples; i += 1) {
-      amplitudes[i] = Math.max(0, amplitudes[i] + gaussianNoise(noiseStd));
-    }
-
     return { depthsMm, amplitudes, spikesMm };
   }, [beamDir.x, beamDir.y, params.amplitude, params.maxDepthMm, params.numSamples, params.snrDb, probePose, processed]);
 
@@ -1079,13 +1084,11 @@ export default function SimulatorUltrasound() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      const snr = Math.max(params.snrDb, 0);
-      const noiseStd = snr <= 0 ? 40 : 40 / Math.sqrt(snr + 1);
       const phase = performance.now() * 0.001;
       const pulse = 0.62 + 0.28 * Math.sin(2 * Math.PI * 1.2 * phase) + 0.1 * Math.sin(2 * Math.PI * 2.4 * phase + 0.7);
       const fd = vesselIntersects
-        ? dopplerBaseHz * pulse + gaussianNoise(noiseStd)
-        : gaussianNoise(noiseStd * 1.6);
+        ? dopplerBaseHz * pulse
+        : 0;
 
       setDopplerTrace((prev) => {
         const next = prev.slice(1);

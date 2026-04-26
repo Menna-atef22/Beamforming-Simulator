@@ -723,7 +723,6 @@ class Simulator5G(BeamformingEngine):
     def run(
         self,
         auto_steer: bool = True,
-        enable_noise: bool = False,
         grid_size: int = 80,
         current_connections: Optional[Dict[int, int]] = None
     ) -> FiveGResult:
@@ -738,12 +737,6 @@ class Simulator5G(BeamformingEngine):
         Returns:
             FiveGResult with towers, users, connectivity, and beam patterns.
         """
-        # 1. Update noise settings
-        if enable_noise:
-            self.noise.enable_noise()
-        else:
-            self.noise.disable_noise()
-
         # 2. Determine which single tower each user is connected to (ideal path loss hysteresis)
         user_connections = self.compute_user_connections(current_connections)
         for user in self.users:
@@ -811,7 +804,6 @@ class Simulator5G(BeamformingEngine):
 
             beam_result = self.run_simulation(
                 steering_angle_deg=tower.steering_angle_deg,
-                enable_noise=enable_noise,
                 grid_size=grid_size,
                 steering_angles_deg=steering_angles
             )

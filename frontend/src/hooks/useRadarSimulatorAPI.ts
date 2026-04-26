@@ -78,6 +78,7 @@ export function useRadarSimulatorAPI() {
           velocitiesMps: rawData.range_doppler_map?.velocities_mps || [],
         },
         metrics: rawData.metrics || {},
+        noiseBuffer: rawData.noise_buffer || [],
       };
       
       return { success: true, data };

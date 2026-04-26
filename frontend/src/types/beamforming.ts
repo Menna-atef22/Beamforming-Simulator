@@ -213,6 +213,7 @@ export interface RadarScanResult {
   detections: DetectedPeak[];
   rangeDopplerMap: RangeDopplerMap;
   metrics: RadarMetrics;
+  noiseBuffer?: number[];
 }
 
 // ============================================================================

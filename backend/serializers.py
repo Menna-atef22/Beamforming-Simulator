@@ -176,7 +176,8 @@ def serialize_radar_result(result) -> Dict[str, Any]:
         "detections": detections,
         "range_doppler_map": range_doppler_map,
         "metrics": metrics,
-        "beam_width_deg": getattr(result, "beam_width_deg", 10.0)
+        "beam_width_deg": getattr(result, "beam_width_deg", 10.0),
+        "noise_buffer": getattr(result, "noise_buffer", [])
     }
 
 
