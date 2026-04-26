@@ -209,15 +209,15 @@ export default function TowerConfigPopup({
               className="text-[8px] font-mono font-semibold px-1.5 py-0.5 rounded-full border"
               style={isAutoSteering
                 ? {
-                    color: `hsl(140,75%,72%)`,
-                    borderColor: `hsla(140,65%,45%,0.55)`,
-                    background: `hsla(140,60%,30%,0.25)`,
-                  }
+                  color: `hsl(140,75%,72%)`,
+                  borderColor: `hsla(140,65%,45%,0.55)`,
+                  background: `hsla(140,60%,30%,0.25)`,
+                }
                 : {
-                    color: `hsl(${towerHue},80%,80%)`,
-                    borderColor: `hsla(${towerHue},65%,50%,0.55)`,
-                    background: `hsla(${towerHue},60%,30%,0.3)`,
-                  }
+                  color: `hsl(${towerHue},80%,80%)`,
+                  borderColor: `hsla(${towerHue},65%,50%,0.55)`,
+                  background: `hsla(${towerHue},60%,30%,0.3)`,
+                }
               }
             >
               {isAutoSteering ? "AUTO" : "MANUAL"}
@@ -248,28 +248,28 @@ export default function TowerConfigPopup({
         {allocations.length > 0 && (
           <div className="flex flex-col gap-2 mt-1">
             <div className="flex items-center justify-between">
-               <span className="text-[9px] font-mono uppercase tracking-wider text-muted-foreground">
-                 Connected Users
-               </span>
-               <span className="text-[9px] font-mono text-muted-foreground/60">
-                 {allocations.length} total
-               </span>
+              <span className="text-[9px] font-mono uppercase tracking-wider text-muted-foreground">
+                Connected Users
+              </span>
+              <span className="text-[9px] font-mono text-muted-foreground/60">
+                {allocations.length} total
+              </span>
             </div>
             <div className="flex flex-col gap-1.5 max-h-32 overflow-y-auto pr-1">
               {allocations.map((a) => (
-                <div 
+                <div
                   key={a.user_id}
                   className="flex items-center justify-between p-1.5 rounded bg-white/5 border border-white/10"
                 >
                   <div className="flex items-center gap-2">
-                    <span 
-                      className="w-1.5 h-1.5 rounded-full" 
-                      style={{ background: `hsl(${a.userHue ?? 0}, 70%, 60%)` }} 
+                    <span
+                      className="w-1.5 h-1.5 rounded-full"
+                      style={{ background: `hsl(${a.userHue ?? 0}, 70%, 60%)` }}
                     />
                     <span className="text-[10px] font-mono font-medium">U{a.user_id}</span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span 
+                    <span
                       className="text-[8px] font-mono px-1 py-0.5 rounded border border-white/20 bg-white/10 text-white/80"
                     >
                       {a.sector}

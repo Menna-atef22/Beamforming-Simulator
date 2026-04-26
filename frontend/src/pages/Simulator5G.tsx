@@ -283,6 +283,22 @@ export default function Simulator5G() {
           }
         }
         setCurrentConnections(newConns);
+
+        // Sync steering angles: update localTowers with the backend's computed
+        // auto-steering angles so the Control Panel slider stays in sync.
+        const apiSteeringById = new Map<number, number>(
+          (res.data?.towers ?? []).map((t: any) => [
+            Number(t.id),
+            Number(t.steering_angle_deg ?? 0),
+          ])
+        );
+        if (apiSteeringById.size > 0) {
+          setLocalTowers(prev => prev.map(t => {
+            const newAngle = apiSteeringById.get(t.id);
+            if (newAngle === undefined) return t;
+            return { ...t, steering_angle_deg: newAngle };
+          }));
+        }
       }
     } finally {
       setIsLoading(false);
@@ -354,7 +370,9 @@ export default function Simulator5G() {
     windowType: ((tower as any)?.window_type ?? defaultParams.windowType),
     noiseEnabled: Boolean((tower as any)?.noise_enabled ?? defaultParams.noiseEnabled),
     apodizationEnabled: Boolean((tower as any)?.apodization_enabled ?? defaultParams.apodizationEnabled),
-    frequency: Number((tower as any)?.frequency ?? defaultParams.frequency),
+    frequency: Number((tower as any)?.frequency != null
+      ? (tower as any).frequency / 1e9  // convert Hz → GHz for ControlPanel slider
+      : defaultParams.frequency),
     geometry: ((tower as any)?.geometry ?? defaultParams.geometry),
     radius: Number((tower as any)?.radius ?? defaultParams.radius),
     autoSteer: false,
@@ -396,7 +414,8 @@ export default function Simulator5G() {
         case "wavelength":
           return { ...tower, wavelength: Number(value) };
         case "steeringAngleDeg":
-          return { ...tower, steering_angle_deg: Number(value) };
+          // Also update manual_steering_deg so the popup slider stays in sync
+          return { ...tower, steering_angle_deg: Number(value), manual_steering_deg: Number(value) };
         case "amplitude":
           return { ...tower, amplitude: Number(value) };
         case "snrDb":
@@ -408,7 +427,7 @@ export default function Simulator5G() {
         case "apodizationEnabled":
           return { ...tower, apodization_enabled: Boolean(value) };
         case "frequency":
-          return { ...tower, frequency: Number(value) };
+          return { ...tower, frequency: Number(value) * 1e9 }; // GHz → Hz
         case "geometry":
           return { ...tower, geometry: value as any };
         case "radius":
@@ -629,6 +648,78 @@ export default function Simulator5G() {
     }
   }, [localUsers, localTowers, toCanvasX, toCanvasY, CANVAS_W, CANVAS_H]);
 
+  // ─── Tower drag ─────────────────────────────────────────────────────────
+  const draggingTowerIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const toWorldX = (canvasX: number) => {
+      const span = Math.max(1e-6, mapViewport.maxX - mapViewport.minX);
+      return mapViewport.minX + (canvasX / CANVAS_W) * span;
+    };
+    const toWorldY = (canvasY: number) => {
+      const span = Math.max(1e-6, mapViewport.maxY - mapViewport.minY);
+      return mapViewport.minY + (1 - canvasY / CANVAS_H) * span;
+    };
+
+    const onMouseDown = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = CANVAS_W / rect.width;
+      const scaleY = CANVAS_H / rect.height;
+      const cx = (e.clientX - rect.left) * scaleX;
+      const cy = (e.clientY - rect.top) * scaleY;
+
+      let bestId: number | null = null;
+      let bestDist = 22; // px hit radius for drag
+      for (const t of localTowersRef.current) {
+        const tx = ((t.x - mapViewport.minX) / Math.max(1e-6, mapViewport.maxX - mapViewport.minX)) * CANVAS_W;
+        const ty = CANVAS_H - ((t.y - mapViewport.minY) / Math.max(1e-6, mapViewport.maxY - mapViewport.minY)) * CANVAS_H;
+        const d = Math.hypot(cx - tx, cy - ty);
+        if (d < bestDist) { bestDist = d; bestId = t.id; }
+      }
+      if (bestId !== null) {
+        draggingTowerIdRef.current = bestId;
+        e.preventDefault();
+      }
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      const id = draggingTowerIdRef.current;
+      if (id === null) return;
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = CANVAS_W / rect.width;
+      const scaleY = CANVAS_H / rect.height;
+      const cx = (e.clientX - rect.left) * scaleX;
+      const cy = (e.clientY - rect.top) * scaleY;
+      const wx = toWorldX(cx);
+      const wy = toWorldY(cy);
+      setLocalTowers(prev => prev.map(t => t.id === id ? { ...t, x: wx, y: wy } : t));
+      // Move popup anchor with the tower
+      setTowerPopupAnchor(prev => {
+        if (!prev) return prev;
+        const vpX = rect.left + (cx / CANVAS_W) * rect.width;
+        const vpY = rect.top + (cy / CANVAS_H) * rect.height - 14;
+        return { x: vpX, y: vpY };
+      });
+    };
+
+    const onMouseUp = () => {
+      if (draggingTowerIdRef.current !== null) {
+        draggingTowerIdRef.current = null;
+        triggerSimAfterMove();
+      }
+    };
+
+    canvas.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      canvas.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [mapViewport, CANVAS_W, CANVAS_H, triggerSimAfterMove]);
 
   // ─── Canvas drawing (continuous animated beams) ─────────────────────────
   useEffect(() => {
@@ -1288,7 +1379,14 @@ export default function Simulator5G() {
 
   // ─── Tower param change → update state + re-simulate ─────────────────────
   const handleTowerParamChange = useCallback((updated: TowerParams) => {
-    setLocalTowers(prev => prev.map(t => t.id === updated.id ? updated : t));
+    // Bidirectional steering sync: when manual_steering_deg changes in the
+    // popup, promote it to steering_angle_deg so the Control Panel slider
+    // stays in sync (towerToControlParams reads steering_angle_deg).
+    const synced: TowerParams = {
+      ...updated,
+      steering_angle_deg: updated.manual_steering_deg ?? updated.steering_angle_deg,
+    };
+    setLocalTowers(prev => prev.map(t => t.id === synced.id ? synced : t));
     // Trigger re-simulation with short debounce (done via useEffect on localTowers)
   }, []);
 
@@ -1828,6 +1926,19 @@ export default function Simulator5G() {
               isAutoSteering={localUsers.some(
                 (u) => liveConnectedTowerByUserId.get(u.id) === selectedTowerId,
               )}
+              liveSteeringDeg={(() => {
+                const connUser = localUsers.find(
+                  (u) => liveConnectedTowerByUserId.get(u.id) === selectedTowerId
+                );
+                if (!connUser) return undefined;
+                const twr = localTowers.find(t => t.id === selectedTowerId);
+                if (!twr) return undefined;
+                const dx = connUser.x - twr.x;
+                const dy = connUser.y - twr.y;
+                // Convert to degrees: 0° = North (up), CW positive — matches steering convention
+                const angleDeg = Math.atan2(dx, dy) * 180 / Math.PI;
+                return parseFloat(angleDeg.toFixed(1));
+              })()}
               onClose={() => { setSelectedTowerId(null); setTowerPopupAnchor(null); }}
               onChange={handleTowerParamChange}
             />
@@ -1886,7 +1997,7 @@ export default function Simulator5G() {
               </div>
             )}
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={distanceChart.curveData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
+              <LineChart data={distanceChart.curveData} margin={{ top: 5, right: 10, bottom: 20, left: 10 }} isAnimationActive={false}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(240,10%,22%)" />
                 <XAxis dataKey="distance" tick={{ fontSize: 9 }}
                   label={{ value: "Distance (m)", position: "bottom", offset: 5, style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
