@@ -6,7 +6,7 @@ import { use5GSimulatorAPI, Simulator5GResponse, Tower, User } from "@/hooks/use
 import { useDebounce } from "@/hooks/useDebounce";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell,
-  LineChart, Line,
+  LineChart, Line, ReferenceLine,
 } from "recharts";
 import BeamPlot from "@/components/BeamPlot";
 import HeatmapView from "@/components/HeatmapView";
@@ -17,7 +17,7 @@ import "./Simulator5G.css";
 // ─── World-space bounds for user movement ────────────────────────────────────
 const WORLD_MIN_X = -14.0;
 const WORLD_MAX_X = 14.0;
-const WORLD_MIN_Y = 0.2;
+const WORLD_MIN_Y = -10.0;
 const WORLD_MAX_Y = 10.5;
 const STEP = 0.25; // metres per key press
 
@@ -952,7 +952,7 @@ export default function Simulator5G() {
         // Draw colored wedge zones
         const sectors = [
           { name: "Alpha", start: 0, end: 120, color: "hsla(210, 70%, 50%, 0.08)", label: "α", labelDeg: 60 },
-          { name: "Beta",  start: 120, end: 240, color: "hsla(120, 70%, 50%, 0.08)", label: "β", labelDeg: 180 },
+          { name: "Beta", start: 120, end: 240, color: "hsla(120, 70%, 50%, 0.08)", label: "β", labelDeg: 180 },
           { name: "Gamma", start: 240, end: 360, color: "hsla(0, 70%, 50%, 0.08)", label: "γ", labelDeg: 300 },
         ];
 
@@ -1039,14 +1039,14 @@ export default function Simulator5G() {
           const dyC = uy - ly;
           const distPx = Math.hypot(dxC, dyC);
           const canvasAngle = Math.atan2(dxC, -dyC);
-          const lobeMaxRadiusPx = distPx; 
+          const lobeMaxRadiusPx = distPx;
 
           const elemN = Math.max(1, Math.round(alloc.num_elements));
           const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
           const towerWindowType = String((tower as any).window_type ?? "rectangular");
           const towerApodizationEnabled = Boolean((tower as any).apodization_enabled ?? false);
           const weights = buildWindowWeights(elemN, towerWindowType, towerApodizationEnabled);
-          
+
           const points: Array<{ x: number; y: number }> = [];
           const baseLobeRadiusPx = 0;
           for (const rel of lobeAngles) {
@@ -1068,11 +1068,16 @@ export default function Simulator5G() {
             for (const p of points) ctx.lineTo(p.x, p.y);
             ctx.closePath();
 
-            const userHue = USER_COLORS[user.id]?.hue ?? DEFAULT_USER_HUE;
-            // Much fainter lobe background
-            ctx.fillStyle = `hsla(${userHue},88%,62%,0.06)`;
+            let beamHue = 210; // Default to Alpha (blue)
+            const sec = String(alloc.sector || "alpha").toLowerCase();
+            if (sec === "alpha") beamHue = 210;
+            else if (sec === "beta") beamHue = 120;
+            else if (sec === "gamma") beamHue = 0;
+
+            // Much fainter lobe background matching the sector
+            ctx.fillStyle = `hsla(${beamHue},88%,62%,0.06)`;
             ctx.fill();
-            ctx.strokeStyle = `hsla(${userHue},92%,70%,0.2)`;
+            ctx.strokeStyle = `hsla(${beamHue},92%,70%,0.2)`;
             ctx.lineWidth = 1;
             ctx.stroke();
 
@@ -1082,11 +1087,11 @@ export default function Simulator5G() {
             ctx.beginPath();
             ctx.moveTo(lx, ly);
             ctx.lineTo(ux, uy);
-            
+
             // Outer glow / shadow
             ctx.shadowBlur = 8;
-            ctx.shadowColor = `hsla(${userHue},90%,65%,0.6)`;
-            ctx.strokeStyle = `hsla(${userHue},95%,75%,0.95)`;
+            ctx.shadowColor = `hsla(${beamHue},90%,65%,0.6)`;
+            ctx.strokeStyle = `hsla(${beamHue},95%,75%,0.95)`;
             ctx.lineWidth = 3.5;
             ctx.lineCap = "round";
             ctx.stroke();
@@ -1113,7 +1118,7 @@ export default function Simulator5G() {
           const elemN = Math.max(2, Math.min(64, Math.round(Number((tower as any).num_elements ?? 16))));
           const towerSpacingLambda = Number((tower as any).spacing ?? 0.5);
           const weights = buildWindowWeights(elemN, "rectangular", false);
-          
+
           const points: Array<{ x: number; y: number }> = [];
           const baseLobeRadiusPx = 0;
           for (const rel of lobeAngles) {
@@ -1127,7 +1132,7 @@ export default function Simulator5G() {
             ctx.save();
             ctx.translate(lx, ly);
             ctx.rotate(canvasAngle);
-            
+
             // Faint lobe background for manual
             ctx.beginPath();
             ctx.moveTo(0, 0);
@@ -1142,7 +1147,7 @@ export default function Simulator5G() {
             // Straight manual beam
             const targetX = Math.sin(0) * lobeMaxRadiusPx; // 0 because we rotated by canvasAngle
             const targetY = -Math.cos(0) * lobeMaxRadiusPx;
-            
+
             ctx.setLineDash([8, 6]);
             ctx.beginPath();
             ctx.moveTo(0, 0);
@@ -1151,7 +1156,7 @@ export default function Simulator5G() {
             ctx.lineWidth = 2.5;
             ctx.stroke();
             ctx.setLineDash([]);
-            
+
             ctx.restore();
           }
         }
@@ -1545,7 +1550,7 @@ export default function Simulator5G() {
       grid: finalGrid,
       xRange,
       yRange,
-      maxVal: 1.0, 
+      maxVal: 1.0,
       extent: Math.max(spanX, spanY),
     };
   }, [
@@ -1581,50 +1586,58 @@ export default function Simulator5G() {
   }, [result?.data?.beamPatterns, activeTowerIds]);
 
   const distanceChart = useMemo(() => {
-    const SAMPLE_COUNT = 40;
-    const connectedTowerIds = Array.from(new Set(Array.from(liveConnectedTowerByUserId.values())));
-    const towers = localTowers.filter((t) => connectedTowerIds.includes(t.id));
+    const SAMPLE_COUNT = 50;
+    const minDist = 0.1;
 
-    if (towers.length === 0) {
-      return { curveData: [] as Array<Record<string, number>>, markers: [] as Array<{ userId: number; towerId: number; distance: number; signal: number }> };
-    }
+    // Find max coverage radius among ALL local towers
+    const maxRadius = Math.max(
+      ...localTowers.map(t => towerCoverageRadiusByTowerId.get(t.id) ?? (t as any).coverage_radius_m ?? 5.0),
+      10 // fallback floor
+    );
 
-    const towerRadiusById = new Map<number, number>();
-    for (const t of towers) {
-      towerRadiusById.set(t.id, towerCoverageRadiusByTowerId.get(t.id) ?? Number(t.coverage_radius_m ?? 4.5));
+    const connectedUsers = localUsers.filter(u => liveConnectedTowerByUserId.has(u.id));
+    if (connectedUsers.length === 0) {
+      return {
+        curveData: [] as Array<Record<string, number>>,
+        markers: [] as Array<{ userId: number; towerId: number; distance: number; signal: number }>
+      };
     }
-    const maxRadius = Math.max(...Array.from(towerRadiusById.values()), 1);
-    const minDist = 0.25;
 
     const curveData = Array.from({ length: SAMPLE_COUNT }, (_, i) => {
       const d = minDist + (i / (SAMPLE_COUNT - 1)) * (maxRadius - minDist);
-      const row: Record<string, number> = { distance: parseFloat(d.toFixed(2)) };
-      for (const t of towers) {
-        const radius = towerRadiusById.get(t.id) ?? maxRadius;
-        const key = `tower_${t.id}`;
-        row[key] = d <= radius ? (1 / (d * d)) : 0;
+      const row: Record<string, number> = { distance: parseFloat(d.toFixed(1)) };
+
+      for (const u of connectedUsers) {
+        const towerId = liveConnectedTowerByUserId.get(u.id);
+        if (towerId == null) continue;
+        const tower = localTowers.find(t => t.id === towerId);
+        if (!tower) continue;
+
+        const allocs = elementAllocsByTowerId.get(towerId) ?? [];
+        const alloc = allocs.find(a => Number(a.user_id) === u.id);
+        const allocFraction = alloc?.fraction ?? (1.0 / (allocs.length || 1));
+
+        const signal = allocFraction / (d * d);
+        row[`user_${u.id}`] = parseFloat(signal.toFixed(6));
       }
       return row;
     });
 
-    const markers = localUsers
+    const markers = connectedUsers
       .map((u) => {
-        const towerId = liveConnectedTowerByUserId.get(u.id);
-        if (towerId == null) return null;
-        const tower = localTowers.find((t) => t.id === towerId);
-        if (!tower) return null;
+        const towerId = liveConnectedTowerByUserId.get(u.id)!;
+        const tower = localTowers.find((t) => t.id === towerId)!;
         const d = Math.max(minDist, Math.hypot(u.x - tower.x, u.y - tower.y));
         const allocs = elementAllocsByTowerId.get(towerId) ?? [];
         const alloc = allocs.find((a) => Number(a.user_id) === u.id);
-        const allocFraction = alloc?.fraction ?? 1.0;
+        const allocFraction = alloc?.fraction ?? (1.0 / (allocs.length || 1));
         return {
           userId: u.id,
           towerId,
           distance: parseFloat(d.toFixed(2)),
           signal: parseFloat((allocFraction / (d * d)).toFixed(6)),
         };
-      })
-      .filter((m): m is { userId: number; towerId: number; distance: number; signal: number } => m !== null);
+      });
 
     return { curveData, markers };
   }, [localUsers, localTowers, liveConnectedTowerByUserId, elementAllocsByTowerId, towerCoverageRadiusByTowerId]);
@@ -1878,15 +1891,24 @@ export default function Simulator5G() {
                 <YAxis tick={{ fontSize: 9 }}
                   label={{ value: "Signal", angle: -90, position: "insideLeft", style: { fill: "hsl(240,8%,55%)", fontSize: 10, fontFamily: "JetBrains Mono" } }} />
                 <Tooltip contentStyle={{ backgroundColor: "hsl(240,10%,15%)", border: "1px solid hsl(240,10%,22%)", borderRadius: 8, fontFamily: "JetBrains Mono", fontSize: 11 }} />
-                {Array.from(new Set(Array.from(liveConnectedTowerByUserId.values()))).sort((a, b) => a - b).map((towerId) => (
+                {localUsers.filter(u => liveConnectedTowerByUserId.has(u.id)).map((u) => (
                   <Line
-                    key={`curve-${towerId}`}
+                    key={`curve-${u.id}`}
                     type="monotone"
-                    dataKey={`tower_${towerId}`}
-                    stroke={`hsl(${TOWER_COLORS[towerId]?.hue ?? DEFAULT_TOWER_HUE},75%,58%)`}
+                    dataKey={`user_${u.id}`}
+                    stroke={`hsl(${USER_COLORS[u.id]?.hue ?? DEFAULT_USER_HUE},75%,58%)`}
                     strokeWidth={2}
                     dot={false}
                     connectNulls={false}
+                  />
+                ))}
+                {distanceChart.markers.map((m) => (
+                  <ReferenceLine
+                    key={`v-line-${m.userId}`}
+                    x={m.distance}
+                    stroke={`hsla(${USER_COLORS[m.userId]?.hue ?? DEFAULT_USER_HUE},80%,60%,0.4)`}
+                    strokeDasharray="4 4"
+                    isAnimationActive={false}
                   />
                 ))}
                 {distanceChart.markers.map((m) => (
@@ -1898,7 +1920,7 @@ export default function Simulator5G() {
                     stroke="transparent"
                     dot={{
                       r: 5,
-                      fill: `hsl(${TOWER_COLORS[m.towerId]?.hue ?? DEFAULT_TOWER_HUE},85%,70%)`,
+                      fill: `hsl(${USER_COLORS[m.userId]?.hue ?? DEFAULT_USER_HUE},85%,70%)`,
                       stroke: "hsl(0,0%,10%)",
                       strokeWidth: 1.2,
                     }}
