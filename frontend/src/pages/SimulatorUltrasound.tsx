@@ -59,10 +59,15 @@ type DopplerPoint = {
 type ProbePathMode = "ellipse" | "rectangle";
 
 const PHANTOM_SIZE = 380;
-const BEAM_W = 320;
-const BEAM_H = 220;
 const BMODE_VIEW_W = 440;
-const BMODE_HISTORY_W = 1024;
+const BMODE_LOG_EPSILON = 1e-3;
+const BMODE_FIXED_FOV_DEG = 72;
+const BMODE_APEX_Y_PX = 18;
+const BMODE_EDGE_DERIV_SCALE = 36;
+const BMODE_AMP_NORM_REF = 1.2;
+const DOPPLER_AXIS_RANGE_HZ = 500;
+const DOPPLER_DT_SEC = 0.04;
+const DOPPLER_FADE_TO_ZERO_SEC = 0.1;
 const TRACE_LEN = 260;
 const AUTO_SCAN_STEP = 0.002;
 const PROBE_RECT_HALF = 0.96;
@@ -96,17 +101,39 @@ const defaultParams: UltrasoundUIParams = {
 };
 
 const defaultPhantom: PhantomEllipse[] = [
-  { regionId: 1, label: "Background Tissue", intensity: 0.75, a: 0.69, b: 0.92, x0: 0, y0: 0, phiDeg: 0, acousticImpedanceMrayl: 1.63, attenuationDbCmMhz: 0.5, backscatterCoeff: 0.28, speedOfSoundMps: 1540, scatterDensity: 0.55, boundaryRoughness: 0.35 },
-  { regionId: 2, label: "CSF Region", intensity: 0.2, a: 0.6624, b: 0.874, x0: 0, y0: -0.0184, phiDeg: 0, acousticImpedanceMrayl: 1.51, attenuationDbCmMhz: 0.02, backscatterCoeff: 0.07, speedOfSoundMps: 1505, scatterDensity: 0.1, boundaryRoughness: 0.1 },
-  { regionId: 3, label: "Dense Inclusion A", intensity: 0.1, a: 0.11, b: 0.31, x0: 0.22, y0: 0, phiDeg: -18, acousticImpedanceMrayl: 1.72, attenuationDbCmMhz: 0.85, backscatterCoeff: 0.44, speedOfSoundMps: 1570, scatterDensity: 0.62, boundaryRoughness: 0.48 },
-  { regionId: 4, label: "Dense Inclusion B", intensity: 0.1, a: 0.16, b: 0.41, x0: -0.22, y0: 0, phiDeg: 18, acousticImpedanceMrayl: 1.68, attenuationDbCmMhz: 0.78, backscatterCoeff: 0.4, speedOfSoundMps: 1560, scatterDensity: 0.58, boundaryRoughness: 0.46 },
-  { regionId: 5, label: "Inner Tissue", intensity: 0.55, a: 0.21, b: 0.25, x0: 0, y0: 0.35, phiDeg: 0, acousticImpedanceMrayl: 1.65, attenuationDbCmMhz: 0.6, backscatterCoeff: 0.3, speedOfSoundMps: 1545, scatterDensity: 0.5, boundaryRoughness: 0.4 },
-  { regionId: 6, label: "Calcification 1", intensity: 0.9, a: 0.046, b: 0.046, x0: -0.08, y0: -0.62, phiDeg: 0, acousticImpedanceMrayl: 5.2, attenuationDbCmMhz: 5.4, backscatterCoeff: 0.83, speedOfSoundMps: 3000, scatterDensity: 0.25, boundaryRoughness: 0.82 },
-  { regionId: 7, label: "Calcification 2", intensity: 0.95, a: 0.03, b: 0.03, x0: 0, y0: -0.62, phiDeg: 0, acousticImpedanceMrayl: 5.5, attenuationDbCmMhz: 6, backscatterCoeff: 0.88, speedOfSoundMps: 3200, scatterDensity: 0.2, boundaryRoughness: 0.85 },
-  { regionId: 8, label: "Calcification 3", intensity: 0.9, a: 0.03, b: 0.05, x0: 0.07, y0: -0.62, phiDeg: 0, acousticImpedanceMrayl: 5.3, attenuationDbCmMhz: 5.7, backscatterCoeff: 0.84, speedOfSoundMps: 3100, scatterDensity: 0.22, boundaryRoughness: 0.8 },
+  { regionId: 1, label: "Background Soft Tissue", intensity: 1.0, a: 0.69, b: 0.92, x0: 0.0, y0: 0.0, phiDeg: 0.0, acousticImpedanceMrayl: 1.54, attenuationDbCmMhz: 0.42, backscatterCoeff: 0.14, speedOfSoundMps: 1540, scatterDensity: 0.30, boundaryRoughness: 0.22 },
+  { regionId: 2, label: "CSF/Ventricle-like Region", intensity: -0.8, a: 0.6624, b: 0.874, x0: 0.0, y0: -0.0184, phiDeg: 0.0, acousticImpedanceMrayl: 1.51, attenuationDbCmMhz: 0.02, backscatterCoeff: 0.06, speedOfSoundMps: 1505, scatterDensity: 0.10, boundaryRoughness: 0.10 },
+  { regionId: 3, label: "Dense Lesion A", intensity: -0.2, a: 0.11, b: 0.31, x0: 0.22, y0: 0.0, phiDeg: -18.0, acousticImpedanceMrayl: 1.72, attenuationDbCmMhz: 0.85, backscatterCoeff: 0.44, speedOfSoundMps: 1570, scatterDensity: 0.62, boundaryRoughness: 0.48 },
+  { regionId: 4, label: "Dense Lesion B", intensity: -0.2, a: 0.16, b: 0.41, x0: -0.22, y0: 0.0, phiDeg: 18.0, acousticImpedanceMrayl: 1.68, attenuationDbCmMhz: 0.78, backscatterCoeff: 0.40, speedOfSoundMps: 1560, scatterDensity: 0.58, boundaryRoughness: 0.46 },
+  { regionId: 5, label: "Parenchyma-like Region", intensity: 0.1, a: 0.21, b: 0.25, x0: 0.0, y0: 0.35, phiDeg: 0.0, acousticImpedanceMrayl: 1.65, attenuationDbCmMhz: 0.60, backscatterCoeff: 0.32, speedOfSoundMps: 1545, scatterDensity: 0.50, boundaryRoughness: 0.40 },
+  { regionId: 6, label: "Calcification 1", intensity: 0.1, a: 0.046, b: 0.046, x0: 0.0, y0: 0.1, phiDeg: 0.0, acousticImpedanceMrayl: 5.50, attenuationDbCmMhz: 6.00, backscatterCoeff: 0.85, speedOfSoundMps: 3200, scatterDensity: 0.25, boundaryRoughness: 0.82 },
+  { regionId: 7, label: "Calcification 2", intensity: 0.1, a: 0.046, b: 0.046, x0: 0.0, y0: -0.1, phiDeg: 0.0, acousticImpedanceMrayl: 5.20, attenuationDbCmMhz: 5.40, backscatterCoeff: 0.80, speedOfSoundMps: 3000, scatterDensity: 0.22, boundaryRoughness: 0.78 },
+  { regionId: 8, label: "Cystic Node 1", intensity: 0.1, a: 0.046, b: 0.023, x0: -0.08, y0: -0.605, phiDeg: 0.0, acousticImpedanceMrayl: 1.49, attenuationDbCmMhz: 0.04, backscatterCoeff: 0.04, speedOfSoundMps: 1490, scatterDensity: 0.08, boundaryRoughness: 0.08 },
+  { regionId: 9, label: "Cystic Node 2", intensity: 0.1, a: 0.023, b: 0.023, x0: 0.0, y0: -0.605, phiDeg: 0.0, acousticImpedanceMrayl: 1.50, attenuationDbCmMhz: 0.05, backscatterCoeff: 0.05, speedOfSoundMps: 1495, scatterDensity: 0.09, boundaryRoughness: 0.09 },
+  { regionId: 10, label: "Cystic Node 3", intensity: 0.1, a: 0.023, b: 0.046, x0: 0.06, y0: -0.605, phiDeg: 0.0, acousticImpedanceMrayl: 1.52, attenuationDbCmMhz: 0.05, backscatterCoeff: 0.05, speedOfSoundMps: 1500, scatterDensity: 0.09, boundaryRoughness: 0.09 },
 ];
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+function normalizeAngle(angleRad: number): number {
+  let a = angleRad;
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
+
+function stableNoise2D(x: number, y: number): number {
+  const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453123;
+  return s - Math.floor(s);
+}
+
+function windowBroadeningFactor(windowType: WindowType): number {
+  if (windowType === "hamming") return 1.18;
+  if (windowType === "hanning") return 1.24;
+  if (windowType === "blackman") return 1.36;
+  if (windowType === "kaiser") return 1.32;
+  return 1.0;
+}
 
 // Cached Box-Muller: generates two independent Gaussian samples per call;
 // the spare is stored and returned on the next invocation, halving cost.
@@ -123,21 +150,6 @@ function gaussianNoise(std: number): number {
   const mag = Math.sqrt(-2 * Math.log(u));
   _spareGaussian = mag * Math.sin(2 * Math.PI * v);
   return mag * Math.cos(2 * Math.PI * v) * std;
-}
-
-function windowWeights(windowType: WindowType, n: number) {
-  const N = Math.max(1, Math.floor(n));
-  if (N === 1) return [1];
-  const out: number[] = new Array(N).fill(1);
-  const denom = N - 1;
-  for (let i = 0; i < N; i += 1) {
-    const p = (2 * Math.PI * i) / denom;
-    if (windowType === "hamming") out[i] = 0.54 - 0.46 * Math.cos(p);
-    else if (windowType === "hanning") out[i] = 0.5 - 0.5 * Math.cos(p);
-    else if (windowType === "blackman") out[i] = 0.42 - 0.5 * Math.cos(p) + 0.08 * Math.cos(2 * p);
-  }
-  const sum = out.reduce((acc, v) => acc + Math.abs(v), 0) || 1;
-  return out.map((v) => v / sum);
 }
 
 function ellipseContains(x: number, y: number, e: ProcessedEllipse) {
@@ -274,6 +286,7 @@ const DopplerCanvas = memo(function DopplerCanvas({ points }: { points: DopplerP
     const top = 12;
     const bottom = cssHeight - 24;
     const mid = Math.round((top + bottom) / 2);
+    const dtSec = 0.04;
 
     ctx.fillStyle = PANEL_BG_ALT;
     ctx.fillRect(0, 0, cssWidth, cssHeight);
@@ -287,32 +300,65 @@ const DopplerCanvas = memo(function DopplerCanvas({ points }: { points: DopplerP
       ctx.stroke();
     }
 
-    ctx.strokeStyle = "rgba(206, 188, 235, 0.55)";
+    // fd = 0 reference line
+    ctx.strokeStyle = "rgba(206, 188, 235, 0.7)";
+    ctx.setLineDash([5, 4]);
     ctx.beginPath();
     ctx.moveTo(left, mid);
     ctx.lineTo(right, mid);
     ctx.stroke();
+    ctx.setLineDash([]);
 
-    let maxAbs = 1;
-    for (let i = 0; i < points.length; i += 1) {
-      const a = Math.abs(points[i].fd);
-      if (a > maxAbs) maxAbs = a;
+    const axisRangeHz = DOPPLER_AXIS_RANGE_HZ;
+
+    const xAt = (i: number) => right - (i / Math.max(points.length - 1, 1)) * (right - left);
+    const yAt = (fd: number) => mid - (fd / axisRangeHz) * ((bottom - top) * 0.45);
+
+    // Positive fd (toward probe) in red, negative fd (away) in blue.
+    ctx.lineWidth = 1.35;
+    for (let i = 1; i < points.length; i += 1) {
+      const fd0Raw = points[i - 1].fd;
+      const fd1Raw = points[i].fd;
+      const fd0 = Number.isFinite(fd0Raw) ? clamp(fd0Raw, -axisRangeHz, axisRangeHz) : 0;
+      const fd1 = Number.isFinite(fd1Raw) ? clamp(fd1Raw, -axisRangeHz, axisRangeHz) : 0;
+      const x0 = xAt(i - 1);
+      const x1 = xAt(i);
+      const y0 = yAt(fd0);
+      const y1 = yAt(fd1);
+      const segFd = (fd0 + fd1) * 0.5;
+
+      ctx.strokeStyle = segFd >= 0 ? "rgba(255, 96, 96, 0.95)" : "rgba(96, 170, 255, 0.95)";
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.stroke();
     }
 
-    ctx.strokeStyle = "rgba(244, 230, 255, 0.95)";
-    ctx.lineWidth = 1.15;
-    ctx.beginPath();
-    for (let i = 0; i < points.length; i += 1) {
-      const x = left + (i / Math.max(points.length - 1, 1)) * (right - left);
-      const y = mid - (points[i].fd / maxAbs) * ((bottom - top) * 0.45);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    // Y-axis labels in Hz
+    ctx.fillStyle = "rgba(230, 221, 250, 0.95)";
+    ctx.font = "10px JetBrains Mono";
+    const yLabels = [-500, -250, 0, 250, 500];
+    for (let i = 0; i < yLabels.length; i += 1) {
+      const v = yLabels[i];
+      const y = yAt(v);
+      if (y < top - 2 || y > bottom + 2) continue;
+      const sign = v > 0 ? "+" : "";
+      ctx.fillText(`${sign}${v}`, 2, y + 3);
     }
-    ctx.stroke();
+
+    // X-axis labels (latest sample at right = 0 s)
+    const totalSec = (points.length - 1) * dtSec;
+    const xTicks = 5;
+    for (let i = 0; i <= xTicks; i += 1) {
+      const frac = i / xTicks;
+      const x = left + frac * (right - left);
+      const t = -totalSec * (1 - frac);
+      ctx.fillText(`${t.toFixed(1)}s`, x - 12, cssHeight - 6);
+    }
 
     ctx.fillStyle = TEXT_COLOR;
     ctx.font = "11px JetBrains Mono";
-    ctx.fillText("Time (s)", Math.max(left + 120, Math.round(cssWidth * 0.45)), cssHeight - 6);
+    ctx.fillText("Time (s)", Math.max(left + 120, Math.round(cssWidth * 0.45)), cssHeight - 18);
     ctx.save();
     ctx.translate(12, Math.round(cssHeight / 2));
     ctx.rotate(-Math.PI / 2);
@@ -452,7 +498,6 @@ export default function SimulatorUltrasound() {
   const [autoScanPaused, setAutoScanPaused] = useState(false);
   const [autoScanSpeed, setAutoScanSpeed] = useState(1);
   const [autoProgress, setAutoProgress] = useState(0);
-  const [bmodeViewOffset, setBmodeViewOffset] = useState(0);
 
   const [vessel, setVessel] = useState<VesselState>({
     x: 0.16,
@@ -467,14 +512,14 @@ export default function SimulatorUltrasound() {
   const vesselDragOffset = useRef({ dx: 0, dy: 0 });
 
   const phantomRef = useRef<HTMLCanvasElement>(null);
-  const beamFieldRef = useRef<HTMLCanvasElement>(null);
   const bmodeRef = useRef<HTMLCanvasElement>(null);
 
-  const bmodeAmpRef = useRef<Float32Array | null>(null);
-  const bmodeWriteIndexRef = useRef(0);
-  const bmodeTotalColumnsRef = useRef(0);
-  const [bmodeColumns, setBmodeColumns] = useState(0);
   const [dopplerTrace, setDopplerTrace] = useState<DopplerPoint[]>(() => Array.from({ length: TRACE_LEN }, () => ({ fd: 0 })));
+  const dopplerBaseHzRef = useRef(0);
+  const vesselIntersectsRef = useRef(false);
+  const dopplerFdRef = useRef(0);
+  const dopplerGainRef = useRef(1);
+  const dopplerNoiseHzRef = useRef(0);
 
   const processed = useMemo<ProcessedEllipse[]>(
     () =>
@@ -550,64 +595,109 @@ export default function SimulatorUltrasound() {
     return { x: x / norm, y: y / norm };
   }, [params.phaseShiftDeg, params.steeringAngleDeg, probePose]);
 
+  const beamModel = useMemo(() => {
+    const n = Math.max(4, params.numElements);
+    const spacing = Math.max(0.1, params.spacing);
+    const freqMHz = Math.max((params.frequency ?? 5e6) / 1e6, 0.1);
+    const broadening = windowBroadeningFactor(params.windowType);
+    const apodizationFactor = params.apodizationEnabled === false ? 0.9 : 1.0;
+
+    const angularSigmaRad = clamp((0.5 / Math.sqrt(n * spacing)) * broadening * apodizationFactor, 0.04, 0.55);
+    const axialResolutionMm = clamp((1.9 * (5 / freqMHz)) * Math.pow(64 / n, 0.28) * Math.pow(spacing / 0.3, 0.18), 0.35, 6.0);
+    const beamGain = clamp((Math.sqrt(n / 64) * Math.sqrt(0.3 / spacing)) / broadening * (params.apodizationEnabled === false ? 1.1 : 1.0), 0.45, 2.4);
+    const dopplerGain = clamp(beamGain * Math.sqrt(Math.max(params.amplitude, 0.1)), 0.4, 2.6);
+
+    return {
+      angularSigmaRad,
+      axialResolutionMm,
+      beamGain,
+      dopplerGain,
+    };
+  }, [params.amplitude, params.apodizationEnabled, params.frequency, params.numElements, params.spacing, params.windowType]);
+
   const amode = useMemo<AModeData>(() => {
     const samples = Math.max(128, Math.floor(params.numSamples));
     const depthsMm = new Float32Array(samples);
     const amplitudes = new Float32Array(samples);
     const spikesMm: number[] = [];
+    const sampleTissue: Array<ProcessedEllipse | null> = new Array(samples).fill(null);
+    const sampleAttenuation = new Float32Array(samples);
 
     if (!probePose) return { depthsMm, amplitudes, spikesMm };
 
-    const mmPerNorm = params.maxDepthMm / 2.1;
+    const phantomHalfSpanNorm = outerBoundary ? Math.max(outerBoundary.a, outerBoundary.b) : 1;
+    const phantomAxialSpanNorm = Math.max(2 * phantomHalfSpanNorm, 1e-6);
+    const mmPerNorm = params.maxDepthMm / phantomAxialSpanNorm;
+    const freqMHz = Math.max((params.frequency ?? 5e6) / 1e6, 0.1);
+    const sampleStepMm = params.maxDepthMm / Math.max(samples - 1, 1);
+    const kernelHalf = clamp(Math.round(beamModel.axialResolutionMm / Math.max(sampleStepMm, 1e-6)), 1, 6);
+    const kernelSigma = Math.max(0.75, kernelHalf * 0.55);
+    const snrLinear = Math.pow(10, Math.max(params.snrDb, 0) / 20);
+    const noiseStd = params.noiseEnabled === false ? 0 : (Math.max(params.amplitude, 0.05) / Math.max(snrLinear, 1e-9));
+
     for (let i = 0; i < samples; i += 1) {
-      depthsMm[i] = (i / Math.max(samples - 1, 1)) * params.maxDepthMm;
+      const depthMm = (i / Math.max(samples - 1, 1)) * params.maxDepthMm;
+      depthsMm[i] = depthMm;
+
+      const rayDistanceNorm = depthMm / Math.max(mmPerNorm, 1e-9);
+      const px = probePose.x + beamDir.x * rayDistanceNorm;
+      const py = probePose.y + beamDir.y * rayDistanceNorm;
+      const tissue = getTissueAtPoint(px, py, processed);
+      sampleTissue[i] = tissue;
+
+      const medium = tissue ?? (i > 0 ? sampleTissue[i - 1] : null);
+      if (!medium) {
+        sampleAttenuation[i] = i > 0 ? sampleAttenuation[i - 1] : 1;
+        amplitudes[i] = 0;
+        continue;
+      }
+
+      const depthCm = depthMm / 10;
+      const attenuationDb = medium.attenuationDbCmMhz * freqMHz * depthCm;
+      sampleAttenuation[i] = Math.pow(10, -attenuationDb / 20);
+      amplitudes[i] = 0;
     }
 
-    const intersections: number[] = [];
-    for (let i = 0; i < processed.length; i += 1) {
-      const hits = rayEllipseIntersections(probePose.x, probePose.y, beamDir.x, beamDir.y, processed[i]);
-      for (let j = 0; j < hits.length; j += 1) intersections.push(hits[j]);
-    }
-    intersections.sort((a, b) => a - b);
+    // Boundary-only echoes from impedance discontinuities.
+    const couplingImpedanceMrayl = 0.2;
+    for (let i = 1; i < samples; i += 1) {
+      const prev = sampleTissue[i - 1];
+      const curr = sampleTissue[i];
+      const prevRegion = prev?.regionId ?? -1;
+      const currRegion = curr?.regionId ?? -1;
+      if (prevRegion === currRegion) continue;
 
-    const unique: number[] = [];
-    for (let i = 0; i < intersections.length; i += 1) {
-      if (i === 0 || Math.abs(intersections[i] - intersections[i - 1]) > 1e-3) unique.push(intersections[i]);
-    }
+      const zPrev = prev?.acousticImpedanceMrayl ?? couplingImpedanceMrayl;
+      const zCurr = curr?.acousticImpedanceMrayl ?? couplingImpedanceMrayl;
+      const r = Math.abs(zCurr - zPrev) / Math.max(zCurr + zPrev, 1e-6);
+      if (r < 1e-3) continue;
 
-    for (let i = 0; i < unique.length; i += 1) {
-      const t = unique[i];
-      const px = probePose.x + beamDir.x * t;
-      const py = probePose.y + beamDir.y * t;
+      spikesMm.push(depthsMm[i]);
 
-      const eps = 2e-3;
-      const before = getTissueAtPoint(px - beamDir.x * eps, py - beamDir.y * eps, processed);
-      const after = getTissueAtPoint(px + beamDir.x * eps, py + beamDir.y * eps, processed);
+      const attenuationLinear = sampleAttenuation[i] || 1;
+      const enteringOrLeavingBody = !prev || !curr;
+      const regionBoundary = !!prev && !!curr && prev.regionId !== curr.regionId;
+      let reflectionGain = enteringOrLeavingBody ? 9.0 : 2.6;
+      if (regionBoundary) reflectionGain *= 0.9;
+      const interfaceEcho = clamp(params.amplitude * beamModel.beamGain * attenuationLinear * r * reflectionGain, 0, 3);
 
-      const z1 = before?.acousticImpedanceMrayl ?? 1.5;
-      const z2 = after?.acousticImpedanceMrayl ?? 1.5;
-      const r = Math.abs(z2 - z1) / Math.max(z2 + z1, 1e-6);
-
-      const depthMm = t * mmPerNorm;
-      if (depthMm <= 0 || depthMm > params.maxDepthMm) continue;
-      spikesMm.push(depthMm);
-
-      const idx = Math.round((depthMm / params.maxDepthMm) * (samples - 1));
-      const spikeAmp = r * params.amplitude;
-      for (let k = -2; k <= 2; k += 1) {
-        const ii = idx + k;
+      for (let k = -kernelHalf; k <= kernelHalf; k += 1) {
+        const ii = i + k;
         if (ii < 0 || ii >= samples) continue;
-        amplitudes[ii] += spikeAmp * Math.exp(-(k * k) / 1.6);
+        const kernel = Math.exp(-(k * k) / (2 * kernelSigma * kernelSigma));
+        amplitudes[ii] = clamp(amplitudes[ii] + interfaceEcho * kernel, 0, 3);
       }
     }
 
-    let signalPower = 0;
-    for (let i = 0; i < samples; i += 1) signalPower += amplitudes[i] * amplitudes[i];
-    signalPower /= samples;
-    const signalRms = Math.sqrt(signalPower);
+    if (noiseStd > 0) {
+      for (let i = 0; i < samples; i += 1) {
+        const n = (stableNoise2D(probePose.x * 131.1 + i * 0.37, probePose.y * 173.3 + i * 0.19) - 0.5) * 2;
+        amplitudes[i] = clamp(amplitudes[i] + n * noiseStd * 0.7, 0, 3);
+      }
+    }
 
     return { depthsMm, amplitudes, spikesMm };
-  }, [beamDir.x, beamDir.y, params.amplitude, params.maxDepthMm, params.numSamples, params.snrDb, probePose, processed]);
+  }, [beamDir.x, beamDir.y, beamModel.axialResolutionMm, beamModel.beamGain, outerBoundary, params.amplitude, params.frequency, params.maxDepthMm, params.noiseEnabled, params.numSamples, params.snrDb, probePose, processed]);
 
   const vesselIntersects = useMemo(() => {
     if (!probePose) return false;
@@ -626,14 +716,24 @@ export default function SimulatorUltrasound() {
 
   const dopplerBaseHz = useMemo(() => {
     if (!vesselIntersects) return 0;
-    const f0 = params.frequency ?? 5e6;
-    const v = vessel.velocityCms / 100;
-    const c = getTissueAtPoint(vessel.x, vessel.y, processed)?.speedOfSoundMps ?? 1540;
-    const beamAngle = Math.atan2(beamDir.y, beamDir.x);
-    const flowAngle = (vessel.flowAngleDeg * Math.PI) / 180;
-    const theta = flowAngle - beamAngle;
-    return (2 * f0 * v * Math.cos(theta)) / c;
-  }, [beamDir.x, beamDir.y, params.frequency, processed, vessel.flowAngleDeg, vessel.velocityCms, vessel.x, vessel.y, vesselIntersects]);
+    const frequencyMHz = (params.frequency ?? 5e6) / 1e6;
+    const velocityCms = vessel.velocityCms;
+    const beamAngleDeg = (Math.atan2(beamDir.y, beamDir.x) * 180) / Math.PI;
+    const flowDirectionDeg = vessel.flowAngleDeg;
+    const thetaDeg = Math.abs(normalizeAngle(((beamAngleDeg - flowDirectionDeg) * Math.PI) / 180)) * (180 / Math.PI);
+    const fd = (2 * frequencyMHz * 1e6 * velocityCms * 0.01 * Math.cos((thetaDeg * Math.PI) / 180)) / 1540;
+    return fd;
+  }, [beamDir.x, beamDir.y, params.frequency, vessel.flowAngleDeg, vessel.velocityCms, vesselIntersects]);
+
+  const currentFdHz = dopplerTrace[0]?.fd ?? 0;
+
+  useEffect(() => {
+    dopplerBaseHzRef.current = dopplerBaseHz;
+    vesselIntersectsRef.current = vesselIntersects;
+    dopplerGainRef.current = beamModel.dopplerGain;
+    const snrLinear = Math.pow(10, Math.max(params.snrDb, 0) / 20);
+    dopplerNoiseHzRef.current = params.noiseEnabled === false ? 0 : DOPPLER_AXIS_RANGE_HZ / Math.max(snrLinear, 1e-9) * 0.16;
+  }, [beamModel.dopplerGain, dopplerBaseHz, params.noiseEnabled, params.snrDb, vesselIntersects]);
 
   const updateParam = useCallback(<K extends keyof UltrasoundUIParams>(key: K, value: UltrasoundUIParams[K]) => {
     setParams((prev) => ({ ...prev, [key]: value }));
@@ -707,13 +807,8 @@ export default function SimulatorUltrasound() {
   );
 
   const resetBmode = useCallback(() => {
-    const h = Math.max(64, Math.floor(params.numSamples));
-    bmodeAmpRef.current = new Float32Array(BMODE_HISTORY_W * h);
-    bmodeWriteIndexRef.current = 0;
-    bmodeTotalColumnsRef.current = 0;
-    setBmodeColumns(0);
+    const h = Math.max(220, Math.floor(params.numSamples));
     setAutoProgress(0);
-    setBmodeViewOffset(0);
 
     const canvas = bmodeRef.current;
     if (canvas) {
@@ -748,11 +843,44 @@ export default function SimulatorUltrasound() {
       const c = normToCanvas(e.x0, e.y0);
       const rx = Math.max(1, (e.a / 2) * PHANTOM_SIZE);
       const ry = Math.max(1, (e.b / 2) * PHANTOM_SIZE);
-      const gray = Math.round(18 + clamp(e.intensity, 0, 1) * 220);
+      // Preserve negative Shepp-Logan intensities so dark brain regions remain visible.
+      const intensityMapped = clamp((e.intensity + 0.8) / 1.8, 0, 1);
+      const gray = Math.round(14 + intensityMapped * 226);
       ctx.fillStyle = `rgb(${gray}, ${gray}, ${gray})`;
       ctx.beginPath();
       ctx.ellipse(c.cx, c.cy, rx, ry, -e.phiRad, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    // Phantom spatial grid overlay (semi-transparent) with depth labels.
+    const gridDivisions = 7;
+    const mmPerDivision = params.maxDepthMm / gridDivisions;
+    ctx.strokeStyle = "rgba(210, 228, 255, 0.20)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= gridDivisions; i += 1) {
+      const x = (i / gridDivisions) * PHANTOM_SIZE;
+      const y = (i / gridDivisions) * PHANTOM_SIZE;
+
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, PHANTOM_SIZE);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(PHANTOM_SIZE, y);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = "rgba(232, 241, 255, 0.75)";
+    ctx.font = "10px JetBrains Mono";
+    for (let i = 1; i <= gridDivisions; i += 1) {
+      const mm = i * mmPerDivision;
+      const cm = mm / 10;
+      const x = (i / gridDivisions) * PHANTOM_SIZE;
+      const y = (i / gridDivisions) * PHANTOM_SIZE;
+      ctx.fillText(`${mm.toFixed(0)}mm`, x + 2, 12);
+      ctx.fillText(`${cm.toFixed(1)}cm`, 4, Math.max(12, y - 3));
     }
 
     if (hover) {
@@ -823,7 +951,7 @@ export default function SimulatorUltrasound() {
 
     ctx.strokeStyle = "rgba(189, 173, 220, 0.35)";
     ctx.strokeRect(0.5, 0.5, PHANTOM_SIZE - 1, PHANTOM_SIZE - 1);
-  }, [beamDir.x, beamDir.y, hover, normToCanvas, probePose, processed, vessel.flowAngleDeg, vessel.radius, vessel.x, vessel.y, vesselIntersects]);
+  }, [beamDir.x, beamDir.y, hover, normToCanvas, params.maxDepthMm, probePose, processed, vessel.flowAngleDeg, vessel.radius, vessel.x, vessel.y, vesselIntersects]);
 
   useEffect(() => {
     const canvas = phantomRef.current;
@@ -920,44 +1048,91 @@ export default function SimulatorUltrasound() {
   }, [canvasToNorm, dragProbe, dragVessel, normToCanvas, outerBoundary, paramFromPoint, probePose, processed, regions, vessel.radius, vessel.x, vessel.y]);
 
   useEffect(() => {
-    const ampBuf = bmodeAmpRef.current;
     const canvas = bmodeRef.current;
-    if (!ampBuf || !canvas) return;
-
-    const h = Math.max(64, Math.floor(params.numSamples));
-    const writeCol = bmodeWriteIndexRef.current;
-
-    for (let i = 0; i < h; i += 1) {
-      const srcIdx = Math.round((i / Math.max(h - 1, 1)) * (amode.amplitudes.length - 1));
-      ampBuf[i * BMODE_HISTORY_W + writeCol] = amode.amplitudes[srcIdx];
-    }
-
-    bmodeWriteIndexRef.current = (writeCol + 1) % BMODE_HISTORY_W;
-    bmodeTotalColumnsRef.current = Math.min(bmodeTotalColumnsRef.current + 1, BMODE_HISTORY_W);
-    setBmodeColumns(bmodeTotalColumnsRef.current);
-
-    const totalColumns = bmodeTotalColumnsRef.current;
-    const startColumn = totalColumns < BMODE_HISTORY_W ? 0 : bmodeWriteIndexRef.current;
-    const maxViewStart = Math.max(totalColumns - BMODE_VIEW_W, 0);
-    const viewStart = clamp(bmodeViewOffset, 0, maxViewStart);
-    const renderColumns = Math.min(BMODE_VIEW_W, Math.max(totalColumns - viewStart, 0));
-
-    let maxAmp = 0;
-    for (let x = 0; x < renderColumns; x += 1) {
-      const srcCol = (startColumn + viewStart + x) % BMODE_HISTORY_W;
-      for (let y = 0; y < h; y += 1) {
-        const amp = ampBuf[y * BMODE_HISTORY_W + srcCol];
-        if (amp > maxAmp) maxAmp = amp;
-      }
-    }
-    maxAmp = Math.max(maxAmp, 1e-6);
-
+    if (!canvas || !probePose) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    canvas.width = BMODE_VIEW_W;
-    canvas.height = h;
 
-    const image = ctx.createImageData(BMODE_VIEW_W, h);
+    const samples = Math.max(128, Math.floor(params.numSamples));
+    const cssW = Math.max(260, Math.floor(canvas.clientWidth || BMODE_VIEW_W));
+    const cssH = Math.max(260, Math.floor(canvas.clientHeight || cssW));
+    const canvasSize = Math.max(260, Math.min(cssW, cssH));
+    const canvasW = canvasSize;
+    const canvasH = canvasSize;
+    canvas.width = canvasW;
+    canvas.height = canvasH;
+
+    // Fixed display window: apex/angle/depth range stay constant.
+    const apexX = (canvasW - 1) * 0.5;
+    const apexY = BMODE_APEX_Y_PX;
+
+    const lineCount = 220;
+    const halfFovRad = (BMODE_FIXED_FOV_DEG * Math.PI) / 360;
+    const centerAngleRad = Math.PI / 2;
+
+    const phantomHalfSpanNorm = outerBoundary ? Math.max(outerBoundary.a, outerBoundary.b) : 1;
+    const phantomAxialSpanNorm = Math.max(2 * phantomHalfSpanNorm, 1e-6);
+    const mmPerNorm = params.maxDepthMm / phantomAxialSpanNorm;
+    const freqMHz = Math.max((params.frequency ?? 5e6) / 1e6, 0.1);
+
+    const maxSectorRadius = Math.max(1, canvasH - apexY - 10);
+
+    const sectorAmplitudes = new Float32Array(lineCount * samples);
+    const couplingImpedanceMrayl = 0.2;
+    const snrLinear = Math.pow(10, Math.max(params.snrDb, 0) / 20);
+    const noiseStdBase = params.noiseEnabled === false ? 0 : (Math.max(params.amplitude, 0.05) / Math.max(snrLinear, 1e-9));
+
+    for (let line = 0; line < lineCount; line += 1) {
+      const t = lineCount <= 1 ? 0.5 : line / (lineCount - 1);
+      const localOffsetRad = (t - 0.5) * (2 * halfFovRad);
+      const beamWeight = Math.exp(-(localOffsetRad * localOffsetRad) / (2 * beamModel.angularSigmaRad * beamModel.angularSigmaRad));
+
+      // World-space ray for phantom sampling follows the actual beam direction.
+      const worldRayX = beamDir.x * Math.cos(localOffsetRad) - beamDir.y * Math.sin(localOffsetRad);
+      const worldRayY = beamDir.x * Math.sin(localOffsetRad) + beamDir.y * Math.cos(localOffsetRad);
+
+      let prevTissue: ProcessedEllipse | null = null;
+      for (let i = 0; i < samples; i += 1) {
+        const depthMm = (i / Math.max(samples - 1, 1)) * params.maxDepthMm;
+        const rayDistanceNorm = depthMm / Math.max(mmPerNorm, 1e-9);
+        const px = probePose.x + worldRayX * rayDistanceNorm;
+        const py = probePose.y + worldRayY * rayDistanceNorm;
+        const tissue = getTissueAtPoint(px, py, processed);
+
+        let amp = 0;
+        const medium = tissue ?? prevTissue;
+        let attenuationLinear = 1;
+        if (medium) {
+          const depthCm = depthMm / 10;
+          const attenuationDb = medium.attenuationDbCmMhz * freqMHz * depthCm;
+          attenuationLinear = Math.pow(10, -attenuationDb / 20);
+        }
+
+        const prevRegion = prevTissue?.regionId ?? -1;
+        const currRegion = tissue?.regionId ?? -1;
+        const zPrev = prevTissue?.acousticImpedanceMrayl ?? couplingImpedanceMrayl;
+        const zCurr = tissue?.acousticImpedanceMrayl ?? couplingImpedanceMrayl;
+        const r = Math.abs(zCurr - zPrev) / Math.max(zCurr + zPrev, 1e-6);
+        if (prevRegion !== currRegion && r > 1e-3) {
+          const enteringOrLeavingBody = !prevTissue || !tissue;
+          const regionBoundary = !!prevTissue && !!tissue && prevTissue.regionId !== tissue.regionId;
+          let reflectionGain = enteringOrLeavingBody ? 9.0 : 2.6;
+          if (regionBoundary) reflectionGain *= 0.9;
+          amp += params.amplitude * beamModel.beamGain * beamWeight * attenuationLinear * r * reflectionGain;
+        }
+
+        if (noiseStdBase > 0) {
+          const n = (stableNoise2D(px * 53.2 + line * 0.31, py * 37.9 + i * 0.17) - 0.5) * 2;
+          amp += n * noiseStdBase * 0.18;
+        }
+
+        // Keep dynamic headroom for log mapping so bright boundaries can emerge.
+        sectorAmplitudes[line * samples + i] = clamp(amp, 0, 5);
+        prevTissue = tissue;
+      }
+    }
+
+    const image = ctx.createImageData(canvasW, canvasH);
     const data = image.data;
 
     for (let i = 0; i < data.length; i += 4) {
@@ -967,13 +1142,38 @@ export default function SimulatorUltrasound() {
       data[i + 3] = 255;
     }
 
-    for (let x = 0; x < renderColumns; x += 1) {
-      const srcCol = (startColumn + viewStart + x) % BMODE_HISTORY_W;
-      for (let y = 0; y < h; y += 1) {
-        const amp = ampBuf[y * BMODE_HISTORY_W + srcCol];
-        const n = Math.log1p(amp) / Math.log1p(maxAmp);
-        const g = Math.round(Math.pow(clamp(n, 0, 1), 0.42) * 255);
-        const p = (y * BMODE_VIEW_W + x) * 4;
+    const invFov = 1 / Math.max(2 * halfFovRad, 1e-9);
+    const invRadius = 1 / Math.max(maxSectorRadius, 1e-9);
+
+    for (let y = 0; y < canvasH; y += 1) {
+      for (let x = 0; x < canvasW; x += 1) {
+        const dx = x - apexX;
+        const dy = y - apexY;
+        const radius = Math.hypot(dx, dy);
+        if (radius > maxSectorRadius) continue;
+
+        const pixelAngleRad = Math.atan2(dy, dx);
+        const delta = normalizeAngle(pixelAngleRad - centerAngleRad);
+        if (Math.abs(delta) > halfFovRad) continue;
+
+        const u = clamp((delta + halfFovRad) * invFov, 0, 1);
+        const v = clamp(radius * invRadius, 0, 1);
+
+        const lineIdx = Math.round(u * (lineCount - 1));
+        const depthIdx = Math.round(v * (samples - 1));
+        const idx = lineIdx * samples + depthIdx;
+        const amp = sectorAmplitudes[idx];
+        const prevAmp = depthIdx > 0 ? sectorAmplitudes[idx - 1] : amp;
+        const nextAmp = depthIdx < samples - 1 ? sectorAmplitudes[idx + 1] : amp;
+        const amplitudeDerivative = 0.5 * Math.abs(amp - prevAmp) + 0.5 * Math.abs(nextAmp - amp);
+
+        // Mixed boundary mapping: strong reflectors + boundary transitions.
+        const ampNorm = clamp(amp / BMODE_AMP_NORM_REF, 0, 1);
+        const derivNorm = clamp(amplitudeDerivative * BMODE_EDGE_DERIV_SCALE, 0, 1);
+        const mix = clamp(ampNorm * 0.3 + derivNorm * 0.7, 0, 1);
+        const g = Math.round(mix * 255);
+
+        const p = (y * canvasW + x) * 4;
         data[p] = g;
         data[p + 1] = g;
         data[p + 2] = g;
@@ -981,12 +1181,49 @@ export default function SimulatorUltrasound() {
     }
 
     ctx.putImageData(image, 0, 0);
-  }, [amode.amplitudes, bmodeViewOffset, params.numSamples]);
 
-  useEffect(() => {
-    if (!autoScan) return;
-    setBmodeViewOffset(Math.max(bmodeColumns - BMODE_VIEW_W, 0));
-  }, [autoScan, bmodeColumns]);
+    // Sector grid overlay: radial depth lines (mm) + angular lines (deg).
+    ctx.save();
+    ctx.strokeStyle = "rgba(210, 228, 255, 0.14)";
+    ctx.lineWidth = 1;
+
+    const radialTicks = 6;
+    for (let i = 1; i <= radialTicks; i += 1) {
+      const depthMm = (i / radialTicks) * params.maxDepthMm;
+      const r = (depthMm / Math.max(params.maxDepthMm, 1e-9)) * maxSectorRadius;
+      ctx.beginPath();
+      ctx.arc(apexX, apexY, r, centerAngleRad - halfFovRad, centerAngleRad + halfFovRad);
+      ctx.stroke();
+
+      const lx = apexX + Math.cos(centerAngleRad) * r;
+      const ly = apexY + Math.sin(centerAngleRad) * r;
+      ctx.fillStyle = "rgba(232, 241, 255, 0.58)";
+      ctx.font = "10px JetBrains Mono";
+      ctx.fillText(`${depthMm.toFixed(0)} mm`, lx + 5, ly - 3);
+    }
+
+    const halfFovDeg = BMODE_FIXED_FOV_DEG / 2;
+    const startDeg = -Math.floor(halfFovDeg / 10) * 10;
+    const endDeg = Math.floor(halfFovDeg / 10) * 10;
+    for (let aDeg = startDeg; aDeg <= endDeg; aDeg += 10) {
+      const aRad = centerAngleRad + (aDeg * Math.PI) / 180;
+      const x2 = apexX + Math.cos(aRad) * maxSectorRadius;
+      const y2 = apexY + Math.sin(aRad) * maxSectorRadius;
+      ctx.beginPath();
+      ctx.moveTo(apexX, apexY);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      const labelR = maxSectorRadius * 0.92;
+      const lx = apexX + Math.cos(aRad) * labelR;
+      const ly = apexY + Math.sin(aRad) * labelR;
+      const sign = aDeg > 0 ? "+" : "";
+      ctx.fillStyle = "rgba(232, 241, 255, 0.58)";
+      ctx.font = "10px JetBrains Mono";
+      ctx.fillText(`${sign}${aDeg.toFixed(0)} deg`, lx + 3, ly - 2);
+    }
+    ctx.restore();
+  }, [beamDir.x, beamDir.y, beamModel.angularSigmaRad, beamModel.beamGain, outerBoundary, params.amplitude, params.frequency, params.maxDepthMm, params.noiseEnabled, params.numSamples, params.snrDb, probePose, processed]);
 
   useEffect(() => {
     if (!autoScan || autoScanPaused) return;
@@ -1013,92 +1250,34 @@ export default function SimulatorUltrasound() {
   }, [autoScan, autoScanPaused, autoScanSpeed, probeParam]);
 
   useEffect(() => {
-    const canvas = beamFieldRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    canvas.width = BEAM_W;
-    canvas.height = BEAM_H;
-
-    const n = Math.max(1, Math.floor(params.numElements));
-    const weights = windowWeights(params.windowType, n);
-    const spacing = params.spacing;
-    const steer = (((params.steeringAngleDeg ?? 0) + params.phaseShiftDeg) * Math.PI) / 180;
-    const xSpan = n * spacing * 1.45;
-    const ySpan = n * spacing * 4.3;
-    const wave = 2 * Math.PI;
-
-    const field = new Float32Array(BEAM_W * BEAM_H);
-    let maxAbs = 0;
-
-    for (let py = 0; py < BEAM_H; py += 1) {
-      const y = (py / Math.max(BEAM_H - 1, 1)) * ySpan;
-      for (let px = 0; px < BEAM_W; px += 1) {
-        const x = (px / Math.max(BEAM_W - 1, 1) - 0.5) * xSpan;
-        let re = 0;
-        for (let k = 0; k < n; k += 1) {
-          const ex = (k - (n - 1) / 2) * spacing;
-          const r = Math.hypot(x - ex, y);
-          const phase = wave * r - wave * ex * Math.sin(steer);
-          re += weights[k] * Math.cos(phase);
-        }
-        const idx = py * BEAM_W + px;
-        field[idx] = re;
-        maxAbs = Math.max(maxAbs, Math.abs(re));
-      }
-    }
-
-    const img = ctx.createImageData(BEAM_W, BEAM_H);
-    const norm = Math.max(maxAbs, 1e-6);
-    for (let i = 0; i < field.length; i += 1) {
-      const c = Math.tanh((field[i] / norm) * 2.2);
-      const p = i * 4;
-      if (c >= 0) {
-        img.data[p] = Math.round(10 + 18 * c);
-        img.data[p + 1] = Math.round(70 + 170 * c);
-        img.data[p + 2] = Math.round(90 + 150 * c);
-      } else {
-        const a = -c;
-        img.data[p] = Math.round(70 + 170 * a);
-        img.data[p + 1] = Math.round(14 + 40 * a);
-        img.data[p + 2] = Math.round(30 + 60 * a);
-      }
-      img.data[p + 3] = 255;
-    }
-
-    ctx.putImageData(img, 0, 0);
-
-    const cx = BEAM_W / 2;
-    const ex = cx + Math.sin(steer) * BEAM_H * 0.95;
-    const ey = Math.cos(steer) * BEAM_H * 0.95;
-    ctx.strokeStyle = ACCENT_COLOR;
-    ctx.lineWidth = 2;
-    ctx.setLineDash([7, 5]);
-    ctx.beginPath();
-    ctx.moveTo(cx, 0);
-    ctx.lineTo(ex, ey);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }, [params.numElements, params.phaseShiftDeg, params.spacing, params.steeringAngleDeg, params.windowType]);
-
-  useEffect(() => {
     const timer = window.setInterval(() => {
       const phase = performance.now() * 0.001;
-      const pulse = 0.62 + 0.28 * Math.sin(2 * Math.PI * 1.2 * phase) + 0.1 * Math.sin(2 * Math.PI * 2.4 * phase + 0.7);
-      const fd = vesselIntersects
-        ? dopplerBaseHz * pulse
+      const pulse = 0.78 + 0.22 * Math.sin(2 * Math.PI * 1.15 * phase) + 0.08 * Math.sin(2 * Math.PI * 2.3 * phase + 0.7);
+      const targetFd = vesselIntersectsRef.current
+        ? dopplerBaseHzRef.current * dopplerGainRef.current * pulse
         : 0;
 
+      let fd = targetFd;
+      if (!vesselIntersectsRef.current) {
+        const alpha = clamp(DOPPLER_DT_SEC / DOPPLER_FADE_TO_ZERO_SEC, 0, 1);
+        fd = dopplerFdRef.current + (targetFd - dopplerFdRef.current) * alpha;
+        if (Math.abs(fd) < 0.5) fd = 0;
+      }
+      if (vesselIntersectsRef.current && dopplerNoiseHzRef.current > 0) {
+        fd += gaussianNoise(dopplerNoiseHzRef.current);
+      }
+      dopplerFdRef.current = fd;
+
       setDopplerTrace((prev) => {
-        const next = prev.slice(1);
-        next.push({ fd });
+        // Newest sample at index 0 -> plotted at right edge, older samples scroll left.
+        const next = prev.slice(0, TRACE_LEN - 1);
+        next.unshift({ fd });
         return next;
       });
-    }, 40);
+    }, DOPPLER_DT_SEC * 1000);
 
     return () => window.clearInterval(timer);
-  }, [dopplerBaseHz, params.snrDb, vesselIntersects]);
+  }, []);
 
   const applyRegionEdit = () => {
     if (editIndex === null || !editDraft) return;
@@ -1170,29 +1349,13 @@ export default function SimulatorUltrasound() {
           <div className="ultra-panel-body"><AModeCanvas data={amode} /></div>
         </section>
 
-        <section className="glass-panel ultra-panel beam-panel">
-          <header className="ultra-panel-header">Beam Field</header>
-          <div className="ultra-panel-body beam-body"><canvas ref={beamFieldRef} className="ultra-beam-canvas" /></div>
-        </section>
-
         <section className="glass-panel ultra-panel bottom-panel bmode-panel">
-          <header className="ultra-panel-header">B-Mode Image</header>
+          <header className="ultra-panel-header">B-Mode Sector Image</header>
           <progress className="ultra-progress" max={100} value={Math.round(autoProgress * 100)} />
           <div className="ultra-doppler-readout">
-            <span>A-Mode columns stack left to right</span>
-            <span>{bmodeColumns} cols</span>
+            <span>Fixed sector window; content updates with current probe position</span>
+            <span>FOV {BMODE_FIXED_FOV_DEG.toFixed(0)} deg</span>
           </div>
-          <div className="ultra-control-row">
-            <Label>B-Mode View</Label>
-            <span>{bmodeViewOffset}</span>
-          </div>
-          <Slider
-            value={[bmodeViewOffset]}
-            min={0}
-            max={Math.max(bmodeColumns - BMODE_VIEW_W, 0)}
-            step={1}
-            onValueChange={([v]) => setBmodeViewOffset(v)}
-          />
           <div className="ultra-bmode-wrap"><canvas ref={bmodeRef} className="ultra-bmode-canvas" /></div>
         </section>
 
@@ -1200,7 +1363,7 @@ export default function SimulatorUltrasound() {
           <header className="ultra-panel-header">Doppler Mode</header>
           <div className="ultra-doppler-readout">
             <span>{vesselIntersects ? "Beam intersects vessel" : "Beam misses vessel"}</span>
-            <span>fd = {dopplerBaseHz.toFixed(1)} Hz</span>
+            <span className="ultra-fd-live">fd = {currentFdHz.toFixed(1)} Hz</span>
           </div>
           <div className="ultra-panel-body"><DopplerCanvas points={dopplerTrace} /></div>
         </section>
