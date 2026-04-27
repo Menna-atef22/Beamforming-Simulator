@@ -87,6 +87,7 @@ class UltrasoundDopplerResult:
     
     Attributes:
         frequencies_hz: Frequency shift axis in Hz.
+        velocities_mms: Velocity axis in mm/s mapped from Doppler frequency.
         power: Doppler power spectrum (linear).
         power_db: Power in dB.
         mean_velocity_mms: Mean blood velocity in mm/s.
@@ -94,6 +95,7 @@ class UltrasoundDopplerResult:
         pulsatility_index: Resistance index for vascular assessment.
     """
     frequencies_hz: List[float]
+    velocities_mms: List[float]
     power: List[float]
     power_db: List[float]
     mean_velocity_mms: float
@@ -874,7 +876,8 @@ class SimulatorUltrasound(BeamformingEngine):
         target_depth_mm: float = 50,
         num_freq_samples: int = 256,
         max_velocity_mms: float = 100,
-        enable_noise: bool = True
+        enable_noise: bool = True,
+        beam_angle_deg: float = 0.0
     ) -> UltrasoundDopplerResult:
         """Execute Doppler velocity imaging.
         
@@ -888,58 +891,78 @@ class SimulatorUltrasound(BeamformingEngine):
             UltrasoundDopplerResult with velocity spectrum.
         """
         if enable_noise:
-            pass
+            self.noise.enable_noise()
         else:
-            self.noise.set_snr(float("inf"))
-        
-        # Generate frequency axis (Doppler shift)
-        nyquist_freq = 2 * self.signal.frequency * max_velocity_mms / (1000 * self.SPEED_OF_SOUND_TISSUE)
-        frequencies_hz = [-nyquist_freq + 2 * nyquist_freq * i / (num_freq_samples - 1)
-                          for i in range(num_freq_samples)]
-        
+            self.noise.disable_noise()
+
+        beam_angle_rad = math.radians(beam_angle_deg)
+        cos_theta = math.cos(beam_angle_rad)
+        v_max_ms = max_velocity_mms / 1000.0
+        nyquist_freq = (2 * self.signal.frequency * v_max_ms) / self.SPEED_OF_SOUND_TISSUE
+        freq_step = (2 * nyquist_freq) / max(num_freq_samples - 1, 1)
+        frequencies_hz = [-nyquist_freq + freq_step * i for i in range(num_freq_samples)]
+
+        # ---- collect contributing scatterers ONCE (outside freq loop) ----
+        contributing = []
+        for scatterer in self.scatterers:
+            if abs(scatterer.depth_mm - target_depth_mm) < 5.0:
+                v_ms = scatterer.motion_velocity_mms / 1000.0
+                doppler_freq = (2 * self.signal.frequency * v_ms * cos_theta) / self.SPEED_OF_SOUND_TISSUE
+                if abs(doppler_freq) > nyquist_freq:
+                    logger.warning(
+                        "Doppler aliasing detected: f_d=%.1f Hz exceeds Nyquist=%.1f Hz",
+                        doppler_freq, nyquist_freq,
+                    )
+                contributing.append({
+                    "velocity_mms": scatterer.motion_velocity_mms,
+                    "doppler_freq": doppler_freq,
+                    "amplitude": scatterer.scattering_amplitude,
+                })
+
+        # ---- metrics computed from contributing scatterers only ----
+        if contributing:
+            total_weight = sum(s["amplitude"] for s in contributing)
+            mean_velocity = (
+                sum(s["velocity_mms"] * s["amplitude"] for s in contributing) / total_weight
+                if total_weight > 0 else 0.0
+            )
+            velocities = [s["velocity_mms"] for s in contributing]
+            max_velocity = max(abs(v) for v in velocities)
+            min_velocity = min(velocities)
+            max_velocity_signed = max(velocities)
+            pi = (max_velocity_signed - min_velocity) / max(abs(mean_velocity), 0.01)
+        else:
+            mean_velocity = 0.0
+            max_velocity = 0.0
+            min_velocity = 0.0
+            pi = 0.0
+
+        # ---- build power spectrum (freq loop only does the Gaussian sum) ----
+        width = max(nyquist_freq / 20.0, 1e-9)
         power = []
-        
-        # Compute Doppler spectrum
         for freq_hz in frequencies_hz:
-            total_power = 0.0
-            
-            # Scatterer contributions
-            for scatterer in self.scatterers:
-                distance_from_target = abs(scatterer.depth_mm - target_depth_mm)
-                
-                # Only include scatterers near target depth
-                if distance_from_target < 5.0:
-                    # Doppler frequency from velocity
-                    doppler_freq = 2 * self.signal.frequency * scatterer.motion_velocity_mms / (1000 * self.SPEED_OF_SOUND_TISSUE)
-                    
-                    # Gaussian frequency response
-                    freq_response = math.exp(-((freq_hz - doppler_freq) ** 2) / (2 * (nyquist_freq / 20) ** 2))
-                    
-                    power_contribution = scatterer.scattering_amplitude * freq_response
-                    total_power += power_contribution
-            
-            # Add noise
+            total_power = sum(
+                s["amplitude"] * math.exp(-((freq_hz - s["doppler_freq"]) ** 2) / (2 * width ** 2))
+                for s in contributing
+            )
             if enable_noise:
-                total_power = self.noise.add_awgn_to_scalar(
-                    total_power,
-                    reference_signal_power=max(self.signal.amplitude ** 2, 1e-12),
-                )
-            
-            power.append(max(0.0, total_power))
-        
-        # Convert to dB
+                noise_power = self.noise.get_noise_power() / self.signal.amplitude
+                total_power = max(0.0, total_power + noise_power * 0.01)
+            power.append(total_power)
+
         power_db = [20 * math.log10(max(p, 1e-10)) for p in power]
-        
-        # Compute Doppler metrics
-        mean_velocity = sum(scatterer.motion_velocity_mms for scatterer in self.scatterers) / max(len(self.scatterers), 1)
-        max_velocity = max((scatterer.motion_velocity_mms for scatterer in self.scatterers), default=0)
-        
-        # Pulsatility index (RI) = (max - min) / mean
-        velocities = [s.motion_velocity_mms for s in self.scatterers]
-        pi = ((max(velocities) - min(velocities)) / max(abs(mean_velocity), 0.01)) if velocities else 0
+
+        if abs(cos_theta) > 1e-9:
+            velocities_mms = [
+                (f * self.SPEED_OF_SOUND_TISSUE) / (2 * self.signal.frequency * cos_theta) * 1000.0
+                for f in frequencies_hz
+            ]
+        else:
+            velocities_mms = [0.0] * num_freq_samples
         
         return UltrasoundDopplerResult(
             frequencies_hz=frequencies_hz,
+            velocities_mms=velocities_mms,
             power=power,
             power_db=power_db,
             mean_velocity_mms=mean_velocity,

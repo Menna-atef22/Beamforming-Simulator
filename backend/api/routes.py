@@ -13,7 +13,8 @@ from .schemas import (
     BeamformingParamsSchema,
     FiveGParamsSchema,
     RadarParamsSchema,
-    UltrasoundParamsSchema
+    UltrasoundParamsSchema,
+    UltrasoundDopplerPhysicsParamsSchema,
 )
 
 # Create FastAPI router
@@ -189,6 +190,20 @@ async def ultrasound_route(params: UltrasoundParamsSchema) -> Dict[str, Any]:
         raise
     except Exception as e:
         logger.error(f"[Ultrasound] Route exception: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/ultrasound/doppler-physics")
+async def ultrasound_doppler_physics_route(params: UltrasoundDopplerPhysicsParamsSchema) -> Dict[str, Any]:
+    """Evaluate Doppler physics equations for frontend time-trace rendering."""
+    try:
+        logger.info(f"[UltrasoundDopplerPhysics] Endpoint called with: {params.dict()}")
+        result = SimulationService.compute_ultrasound_doppler_physics(params.dict())
+        return _handle_simulation_response(result, "UltrasoundDopplerPhysics")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[UltrasoundDopplerPhysics] Route exception: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

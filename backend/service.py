@@ -326,3 +326,48 @@ class SimulationService:
         except Exception as e:
             logger.error(f"Ultrasound simulation failed: {str(e)}", exc_info=True)
             return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def compute_ultrasound_doppler_physics(params_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Compute Doppler equation primitives for frontend trace generation.
+
+        Returns Doppler base magnitude and directional cosine using:
+            f_d = (2 * f0 * v * |cos(theta)|) / c
+        where v is converted from cm/s to m/s and c = 1540 m/s.
+        """
+        try:
+            f0 = float(params_dict.get("frequency_hz", 5e6))
+            velocity_cms = float(params_dict.get("velocity_cms", 0.0))
+            flow_angle_deg = float(params_dict.get("flow_angle_deg", 0.0))
+            beam_dir_x = float(params_dict.get("beam_dir_x", 1.0))
+            beam_dir_y = float(params_dict.get("beam_dir_y", 0.0))
+            vessel_intersects = bool(params_dict.get("vessel_intersects", True))
+
+            # Normalize beam direction to guarantee stable dot-product behavior.
+            beam_norm = math.hypot(beam_dir_x, beam_dir_y)
+            if beam_norm <= 1e-12:
+                beam_dir_x, beam_dir_y = 1.0, 0.0
+            else:
+                beam_dir_x /= beam_norm
+                beam_dir_y /= beam_norm
+
+            flow_rad = math.radians(flow_angle_deg)
+            flow_x = math.cos(flow_rad)
+            flow_y = math.sin(flow_rad)
+            cos_theta = (flow_x * beam_dir_x) + (flow_y * beam_dir_y)
+
+            c = 1540.0
+            velocity_ms = velocity_cms * 0.01
+            doppler_base_hz = (2.0 * f0 * velocity_ms * abs(cos_theta)) / c if vessel_intersects else 0.0
+
+            return {
+                "success": True,
+                "data": {
+                    "doppler_base_hz": doppler_base_hz,
+                    "cos_theta": cos_theta,
+                    "flow_sign": 1.0 if cos_theta > 0 else (-1.0 if cos_theta < 0 else 0.0),
+                },
+            }
+        except Exception as e:
+            logger.error(f"Ultrasound Doppler physics evaluation failed: {str(e)}", exc_info=True)
+            return {"success": False, "error": str(e)}

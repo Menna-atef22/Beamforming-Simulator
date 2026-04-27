@@ -10,6 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { apiFetch } from "@/lib/apiClient";
 import "./SimulatorUltrasound.css";
 
 type UltrasoundUIParams = BeamformingParams & {
@@ -68,6 +69,7 @@ const BMODE_AMP_NORM_REF = 1.2;
 const DOPPLER_AXIS_RANGE_HZ = 500;
 const DOPPLER_DT_SEC = 0.04;
 const DOPPLER_FADE_TO_ZERO_SEC = 0.1;
+const DOPPLER_X_ZOOM = 2.0;
 const TRACE_LEN = 260;
 const AUTO_SCAN_STEP = 0.002;
 const PROBE_RECT_HALF = 0.96;
@@ -287,6 +289,8 @@ const DopplerCanvas = memo(function DopplerCanvas({ points }: { points: DopplerP
     const bottom = cssHeight - 24;
     const mid = Math.round((top + bottom) / 2);
     const dtSec = 0.04;
+    const visibleCount = Math.max(2, Math.floor(points.length / Math.max(DOPPLER_X_ZOOM, 1)));
+    const visiblePoints = points.slice(0, visibleCount);
 
     ctx.fillStyle = PANEL_BG_ALT;
     ctx.fillRect(0, 0, cssWidth, cssHeight);
@@ -309,18 +313,23 @@ const DopplerCanvas = memo(function DopplerCanvas({ points }: { points: DopplerP
     ctx.stroke();
     ctx.setLineDash([]);
 
-    const axisRangeHz = DOPPLER_AXIS_RANGE_HZ;
+    // Find symmetric scale
+    let maxAbs = 1;
+    for (let i = 0; i < visiblePoints.length; i += 1) {
+      const a = Math.abs(visiblePoints[i].fd);
+      if (a > maxAbs) maxAbs = a;
+    }
 
-    const xAt = (i: number) => right - (i / Math.max(points.length - 1, 1)) * (right - left);
-    const yAt = (fd: number) => mid - (fd / axisRangeHz) * ((bottom - top) * 0.45);
+    const xAt = (i: number) => right - (i / Math.max(visiblePoints.length - 1, 1)) * (right - left);
+    const yAt = (fd: number) => mid - (fd / maxAbs) * ((bottom - top) * 0.45);
 
     // Positive fd (toward probe) in red, negative fd (away) in blue.
     ctx.lineWidth = 1.35;
-    for (let i = 1; i < points.length; i += 1) {
-      const fd0Raw = points[i - 1].fd;
-      const fd1Raw = points[i].fd;
-      const fd0 = Number.isFinite(fd0Raw) ? clamp(fd0Raw, -axisRangeHz, axisRangeHz) : 0;
-      const fd1 = Number.isFinite(fd1Raw) ? clamp(fd1Raw, -axisRangeHz, axisRangeHz) : 0;
+    for (let i = 1; i < visiblePoints.length; i += 1) {
+      const fd0Raw = visiblePoints[i - 1].fd;
+      const fd1Raw = visiblePoints[i].fd;
+      const fd0 = Number.isFinite(fd0Raw) ? fd0Raw : 0;
+      const fd1 = Number.isFinite(fd1Raw) ? fd1Raw : 0;
       const x0 = xAt(i - 1);
       const x1 = xAt(i);
       const y0 = yAt(fd0);
@@ -334,20 +343,15 @@ const DopplerCanvas = memo(function DopplerCanvas({ points }: { points: DopplerP
       ctx.stroke();
     }
 
-    // Y-axis labels in Hz
+    // Y-axis direction labels for signed Doppler frequency.
     ctx.fillStyle = "rgba(230, 221, 250, 0.95)";
     ctx.font = "10px JetBrains Mono";
-    const yLabels = [-500, -250, 0, 250, 500];
-    for (let i = 0; i < yLabels.length; i += 1) {
-      const v = yLabels[i];
-      const y = yAt(v);
-      if (y < top - 2 || y > bottom + 2) continue;
-      const sign = v > 0 ? "+" : "";
-      ctx.fillText(`${sign}${v}`, 2, y + 3);
-    }
+    ctx.fillText("+fd", 2, top + 10);
+    ctx.fillText("-fd", 2, bottom - 2);
+    ctx.fillText("0", 2, mid + 3);
 
     // X-axis labels (latest sample at right = 0 s)
-    const totalSec = (points.length - 1) * dtSec;
+    const totalSec = (visiblePoints.length - 1) * dtSec;
     const xTicks = 5;
     for (let i = 0; i <= xTicks; i += 1) {
       const frac = i / xTicks;
@@ -515,7 +519,10 @@ export default function SimulatorUltrasound() {
   const bmodeRef = useRef<HTMLCanvasElement>(null);
 
   const [dopplerTrace, setDopplerTrace] = useState<DopplerPoint[]>(() => Array.from({ length: TRACE_LEN }, () => ({ fd: 0 })));
+  const [dopplerPhysics, setDopplerPhysics] = useState({ baseHz: 0, cosTheta: 0, flowSign: 0 });
   const dopplerBaseHzRef = useRef(0);
+  const dopplerCosThetaRef = useRef(0);
+  const dopplerFlowSignRef = useRef(0);
   const vesselIntersectsRef = useRef(false);
   const dopplerFdRef = useRef(0);
   const dopplerGainRef = useRef(1);
@@ -714,26 +721,92 @@ export default function SimulatorUltrasound() {
     return t1 >= 0 || t2 >= 0;
   }, [beamDir.x, beamDir.y, probePose, vessel.radius, vessel.x, vessel.y]);
 
-  const dopplerBaseHz = useMemo(() => {
-    if (!vesselIntersects) return 0;
-    const frequencyMHz = (params.frequency ?? 5e6) / 1e6;
-    const velocityCms = vessel.velocityCms;
-    const beamAngleDeg = (Math.atan2(beamDir.y, beamDir.x) * 180) / Math.PI;
-    const flowDirectionDeg = vessel.flowAngleDeg;
-    const thetaDeg = Math.abs(normalizeAngle(((beamAngleDeg - flowDirectionDeg) * Math.PI) / 180)) * (180 / Math.PI);
-    const fd = (2 * frequencyMHz * 1e6 * velocityCms * 0.01 * Math.cos((thetaDeg * Math.PI) / 180)) / 1540;
-    return fd;
+  const dopplerBaseHz = dopplerPhysics.baseHz;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const flowRad = (vessel.flowAngleDeg * Math.PI) / 180;
+    const flowVec = { x: Math.cos(flowRad), y: Math.sin(flowRad) };
+    const cosThetaFallback = flowVec.x * beamDir.x + flowVec.y * beamDir.y;
+    const flowSignFallback = cosThetaFallback > 0 ? 1 : (cosThetaFallback < 0 ? -1 : 0);
+    const f0 = params.frequency ?? 5e6;
+    const v = vessel.velocityCms * 0.01;
+    const c = 1540;
+    const baseHzFallback = vesselIntersects ? (2 * f0 * v * Math.abs(cosThetaFallback)) / c : 0;
+
+    // Keep Doppler responsive even if backend call is temporarily unavailable.
+    setDopplerPhysics({
+      baseHz: baseHzFallback,
+      cosTheta: cosThetaFallback,
+      flowSign: flowSignFallback,
+    });
+
+    const computeDopplerPhysics = async () => {
+      try {
+        const response = await apiFetch("/api/ultrasound/doppler-physics", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            frequency_hz: params.frequency ?? 5e6,
+            velocity_cms: vessel.velocityCms,
+            flow_angle_deg: vessel.flowAngleDeg,
+            beam_dir_x: beamDir.x,
+            beam_dir_y: beamDir.y,
+            vessel_intersects: vesselIntersects,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const payload = await response.json();
+        if (cancelled) return;
+
+        const baseHz = Number(payload?.doppler_base_hz);
+        const cosTheta = Number(payload?.cos_theta);
+        const flowSign = Number(payload?.flow_sign);
+
+        if (!Number.isFinite(baseHz) || !Number.isFinite(cosTheta) || !Number.isFinite(flowSign)) {
+          throw new Error("Invalid Doppler physics payload");
+        }
+
+        setDopplerPhysics({
+          baseHz,
+          cosTheta,
+          flowSign,
+        });
+      } catch {
+        if (!cancelled) {
+          setDopplerPhysics({
+            baseHz: baseHzFallback,
+            cosTheta: cosThetaFallback,
+            flowSign: flowSignFallback,
+          });
+        }
+      }
+    };
+
+    computeDopplerPhysics();
+    return () => {
+      cancelled = true;
+    };
   }, [beamDir.x, beamDir.y, params.frequency, vessel.flowAngleDeg, vessel.velocityCms, vesselIntersects]);
 
   const currentFdHz = dopplerTrace[0]?.fd ?? 0;
 
   useEffect(() => {
     dopplerBaseHzRef.current = dopplerBaseHz;
+    dopplerCosThetaRef.current = dopplerPhysics.cosTheta;
+    dopplerFlowSignRef.current = dopplerPhysics.flowSign;
     vesselIntersectsRef.current = vesselIntersects;
     dopplerGainRef.current = beamModel.dopplerGain;
     const snrLinear = Math.pow(10, Math.max(params.snrDb, 0) / 20);
     dopplerNoiseHzRef.current = params.noiseEnabled === false ? 0 : DOPPLER_AXIS_RANGE_HZ / Math.max(snrLinear, 1e-9) * 0.16;
-  }, [beamModel.dopplerGain, dopplerBaseHz, params.noiseEnabled, params.snrDb, vesselIntersects]);
+  }, [beamModel.dopplerGain, dopplerBaseHz, dopplerPhysics.cosTheta, dopplerPhysics.flowSign, params.noiseEnabled, params.snrDb, vesselIntersects]);
 
   const updateParam = useCallback(<K extends keyof UltrasoundUIParams>(key: K, value: UltrasoundUIParams[K]) => {
     setParams((prev) => ({ ...prev, [key]: value }));
@@ -1251,21 +1324,26 @@ export default function SimulatorUltrasound() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      const phase = performance.now() * 0.001;
-      const pulse = 0.78 + 0.22 * Math.sin(2 * Math.PI * 1.15 * phase) + 0.08 * Math.sin(2 * Math.PI * 2.3 * phase + 0.7);
-      const targetFd = vesselIntersectsRef.current
-        ? dopplerBaseHzRef.current * dopplerGainRef.current * pulse
+      const heartRate = 1.2;
+      const phase = (performance.now() * 0.001 * heartRate) % 1.0;
+
+      let pulse;
+      if (phase < 0.15) {
+        // Systolic upstroke
+        pulse = Math.sin(Math.PI * phase / 0.15);
+      } else if (phase < 0.4) {
+        // Systolic decay
+        pulse = Math.exp(-((phase - 0.15) / 0.10));
+      } else {
+        // Diastolic low flow
+        pulse = 0.15 + 0.05 * Math.sin(2 * Math.PI * phase);
+      }
+
+      const noiseStd = dopplerNoiseHzRef.current;
+      const fd = vesselIntersectsRef.current
+        ? dopplerBaseHzRef.current * dopplerFlowSignRef.current * pulse + gaussianNoise(noiseStd)
         : 0;
 
-      let fd = targetFd;
-      if (!vesselIntersectsRef.current) {
-        const alpha = clamp(DOPPLER_DT_SEC / DOPPLER_FADE_TO_ZERO_SEC, 0, 1);
-        fd = dopplerFdRef.current + (targetFd - dopplerFdRef.current) * alpha;
-        if (Math.abs(fd) < 0.5) fd = 0;
-      }
-      if (vesselIntersectsRef.current && dopplerNoiseHzRef.current > 0) {
-        fd += gaussianNoise(dopplerNoiseHzRef.current);
-      }
       dopplerFdRef.current = fd;
 
       setDopplerTrace((prev) => {

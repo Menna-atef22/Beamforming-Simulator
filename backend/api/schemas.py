@@ -352,3 +352,13 @@ class UltrasoundParamsSchema(BaseModel):
                 "target_depth_mm": 50
             }
         }
+
+
+class UltrasoundDopplerPhysicsParamsSchema(BaseModel):
+    """Request schema for Doppler equation evaluation used by frontend trace logic."""
+    frequency_hz: float = Field(default=5e6, gt=0, description="Transmit frequency in Hz")
+    velocity_cms: float = Field(default=20.0, description="Flow velocity in cm/s")
+    flow_angle_deg: float = Field(default=0.0, description="Flow direction angle in degrees")
+    beam_dir_x: float = Field(default=1.0, description="Beam unit vector X component")
+    beam_dir_y: float = Field(default=0.0, description="Beam unit vector Y component")
+    vessel_intersects: bool = Field(default=True, description="Whether beam intersects vessel")
