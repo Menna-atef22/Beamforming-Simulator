@@ -59,6 +59,18 @@ class NoiseModel:
         self.noise_multiplier = get_noise_amplitude(snr_db)
         
         # Noise is controlled purely by snr_db (inf => no noise).
+
+    @property
+    def noise_enabled(self) -> bool:
+        """Backward-compatible noise enable flag."""
+        return self.noise_multiplier > 0.0
+
+    @noise_enabled.setter
+    def noise_enabled(self, enabled: bool) -> None:
+        if enabled:
+            self.enable_noise()
+        else:
+            self.disable_noise()
     
     # Cached Box-Muller spare — avoids discarding the second generated sample.
     _spare: Optional[float] = None
@@ -166,6 +178,10 @@ class NoiseModel:
         # Skip imperceptible noise (SNR so high that std < 1e-9)
         if noise_power < 1e-18: return signal
         return signal + self._gaussian_random() * math.sqrt(noise_power)
+
+    def add_awgn_to_scalar(self, signal: float, reference_signal_power: float = 1.0) -> float:
+        """Backward-compatible alias for scalar AWGN addition."""
+        return self.add_noise_to_scalar(signal, reference_power=reference_signal_power)
     
     def add_noise_to_complex(self, real: float, imag: float, reference_power: float = 1.0) -> tuple:
         """Add Gaussian noise to complex signal (I/Q components)."""
@@ -196,6 +212,10 @@ class NoiseModel:
             return list(signals)
         sigma = math.sqrt(noise_power)
         return [s + self._gaussian_random() * sigma for s in signals]
+
+    def add_awgn_to_array(self, signals: List[float]) -> List[float]:
+        """Backward-compatible alias for array AWGN addition."""
+        return self.add_noise_to_array(signals)
     
     def set_snr(self, snr_db: float) -> None:
         """Update SNR setting.
