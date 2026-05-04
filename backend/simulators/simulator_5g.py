@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from ..core.beamforming_engine import BeamformingEngine, BeamformingResult
 from ..core.array_model import ArrayModel
 from ..core.signal_model import SignalModel
-from ..core.noise_model import NoiseModel
+from ..core.noise_model import NoiseModel, get_noise_amplitude
 from ..core.window_functions import WindowFunction
 
 
@@ -373,6 +373,53 @@ class Simulator5G(BeamformingEngine):
             "radius": float(rad),
         }
 
+    def _tower_signal_at_point(
+        self,
+        tower: Tower,
+        x: float,
+        y: float,
+        seed_x: int,
+        seed_y: int,
+    ) -> tuple[float, float, float, float]:
+        """Compute the received signal from one tower at a point."""
+        eff = self._tower_effective_params(tower)
+        amplitude = float(eff["amplitude"])
+        snr_db = float(eff["snr_db"])
+        snr_scale = self._snr_signal_scale(snr_db)
+
+        dx = x - tower.x
+        dy = y - tower.y
+        distance = math.sqrt(dx * dx + dy * dy)
+        angle_to_point = math.atan2(dx, dy) * 180 / math.pi if distance > 1e-6 else 0.0
+        beam_gain = self._get_beam_gain_at_angle(angle_to_point, tower.steering_angle_deg)
+
+        signal = amplitude * beam_gain / max(distance * distance, 1e-6)
+        signal *= snr_scale
+        noise_multiplier = get_noise_amplitude(snr_db)
+        if noise_multiplier > 0.0:
+            signal = self._apply_signal_noise(signal, noise_multiplier, seed_x, seed_y)
+
+        return distance, angle_to_point, beam_gain, signal
+
+    @staticmethod
+    def _apply_signal_noise(signal: float, noise_multiplier: float, seed_x: int, seed_y: int) -> float:
+        """Apply deterministic AWGN to a linear signal strength value."""
+        if noise_multiplier <= 0.0 or signal <= 0.0:
+            return max(0.0, signal)
+
+        noise_power = signal * noise_multiplier
+        if noise_power <= 1e-18:
+            return max(0.0, signal)
+
+        noise = NoiseModel.cached_gaussian(seed_x, seed_y, 0) * math.sqrt(noise_power)
+        return max(0.0, signal + noise)
+
+    @staticmethod
+    def _snr_signal_scale(snr_db: float) -> float:
+        """Map SNR into a visible linear signal scale."""
+        snr = max(0.0, float(snr_db))
+        return max(0.05, snr / (snr + 30.0))
+
     @staticmethod
     def _wrap_angle_deg(angle_deg: float) -> float:
         """Normalize angle to [-180, 180] degrees."""
@@ -534,9 +581,12 @@ class Simulator5G(BeamformingEngine):
             allocs = element_allocations.get(tower.id, [])
             eff = self._tower_effective_params(tower)
             freq = float(eff["frequency"])
+            snr_db = float(eff["snr_db"])
+            snr_scale = self._snr_signal_scale(snr_db)
             wavelength_m = self.speed_of_light / max(1.0, freq)
             spacing_over_lambda = float(eff["spacing"])
             amplitude = float(eff["amplitude"])
+            noise_multiplier = get_noise_amplitude(snr_db)
             
             for user in self.users:
                 # Distance and angle
@@ -567,6 +617,8 @@ class Simulator5G(BeamformingEngine):
                         wavelength_m=wavelength_m,
                         amplitude=amplitude,
                     )
+                    signal_strength *= snr_scale
+                    signal_strength = self._apply_signal_noise(signal_strength, noise_multiplier, tower.id, user.id)
                     gain = abs(self._normalized_sinc(
                         int(alloc_for_user.get("num_elements", 1))
                         * math.pi
@@ -577,6 +629,8 @@ class Simulator5G(BeamformingEngine):
                     # Unallocated users see leakage from nominal tower beam plus distance decay.
                     gain = self._get_beam_gain_at_angle(angle_to_user, tower.steering_angle_deg)
                     signal_strength = amplitude * gain / max(distance * distance, 1e-6)
+                    signal_strength *= snr_scale
+                    signal_strength = self._apply_signal_noise(signal_strength, noise_multiplier, tower.id, user.id)
 
                 path_loss_db = self._compute_path_loss(distance)
                 
@@ -610,8 +664,9 @@ class Simulator5G(BeamformingEngine):
     ) -> Dict[int, Optional[int]]:
         """Determine which tower each user connects to (one tower per user).
 
-        Uses ideal path loss (omni tracking) to avoid dropping users due to 
-        momentary misaligned narrow beams. Applies hysteresis to prevent ping-pong.
+        Computes actual received signal strength (path loss + beam gain + SNR noise)
+        for each tower and connects user to tower with highest signal strength.
+        Applies hysteresis to prevent ping-pong.
 
         Args:
             current_connections: Optional map of {user_id: tower_id} from the
@@ -620,21 +675,21 @@ class Simulator5G(BeamformingEngine):
         Returns:
             Dict mapping user_id -> tower_id (or None if no tower in range).
         """
-        # Build per-user signal map using optimal 1.0 gain
+        # Build per-user signal map with actual beam gain and SNR noise considered
         signal_map: Dict[int, Dict[int, float]] = {u.id: {} for u in self.users}
 
         for tower in self.towers:
             for user in self.users:
-                dx = user.x - tower.x
-                dy = user.y - tower.y
-                distance = math.sqrt(dx * dx + dy * dy)
+                distance, _, _, signal = self._tower_signal_at_point(
+                    tower,
+                    user.x,
+                    user.y,
+                    tower.id,
+                    user.id,
+                )
                 if distance > tower.coverage_radius_m:
                     # Out of visible coverage area: tower is not a valid serving candidate.
                     continue
-                path_loss_db = self._compute_path_loss(distance)
-                
-                # Ideal tracking gain = 1.0
-                signal = self.signal.amplitude / (10 ** (path_loss_db / 20))
                 signal_map[user.id][tower.id] = signal
 
         connections: Dict[int, Optional[int]] = {}
@@ -645,8 +700,9 @@ class Simulator5G(BeamformingEngine):
                 connections[user.id] = None
                 continue
 
+            # Select tower with highest signal strength
             best_tower_id = max(sigs, key=lambda tid: sigs[tid])
-            best_signal   = sigs[best_tower_id]
+            best_signal = sigs[best_tower_id]
 
             # Apply hysteresis if we were already connected somewhere
             prev_tid = (current_connections or {}).get(user.id)
@@ -674,26 +730,23 @@ class Simulator5G(BeamformingEngine):
             total_signal = 0.0
             
             for tower in self.towers:
-                eff = self._tower_effective_params(tower)
-                freq = float(eff["frequency"])
-                wavelength_m = self.speed_of_light / max(1.0, freq)
-                spacing_over_lambda = float(eff["spacing"])
-                amplitude = float(eff["amplitude"])
-
                 dx = user.x - tower.x
                 dy = user.y - tower.y
                 distance = math.sqrt(dx * dx + dy * dy)
-                
-                if distance > 0:
-                    angle_to_user = math.atan2(dx, dy) * 180 / math.pi
-                else:
-                    angle_to_user = 0
-                
+                eff = self._tower_effective_params(tower)
+                snr_db = float(eff["snr_db"])
+                snr_scale = self._snr_signal_scale(snr_db)
+                noise_multiplier = get_noise_amplitude(snr_db)
                 allocs = element_allocations.get(tower.id, [])
                 n_total = tower.num_elements if tower.num_elements is not None else self.array.num_elements
                 alloc_for_user = next((a for a in allocs if a.get("user_id") == user.id), None)
 
                 if alloc_for_user is not None:
+                    freq = float(eff["frequency"])
+                    wavelength_m = self.speed_of_light / max(1.0, freq)
+                    spacing_over_lambda = float(eff["spacing"])
+                    amplitude = float(eff["amplitude"])
+                    angle_to_user = math.atan2(dx, dy) * 180 / math.pi if distance > 1e-6 else 0
                     theta_offset = self._wrap_angle_deg(angle_to_user - float(alloc_for_user.get("angle_deg", 0.0)))
                     signal = self._compute_split_signal(
                         n_allocated=int(alloc_for_user.get("num_elements", 1)),
@@ -704,18 +757,17 @@ class Simulator5G(BeamformingEngine):
                         wavelength_m=wavelength_m,
                         amplitude=amplitude,
                     )
+                    signal *= snr_scale
+                    signal = self._apply_signal_noise(signal, noise_multiplier, tower.id, user.id)
                 else:
-                    gain = self._get_beam_gain_at_angle(angle_to_user, tower.steering_angle_deg)
-                    signal = amplitude * gain / max(distance * distance, 1e-6)
+                    _, _, _, signal = self._tower_signal_at_point(
+                        tower,
+                        user.x,
+                        user.y,
+                        tower.id,
+                        user.id,
+                    )
                 total_signal += signal
-
-            # Add AWGN with a stable reference power (per-user aggregate link level).
-            if self.noise.noise_enabled:
-                ref_power = max(self.signal.amplitude ** 2, 1e-12)
-                total_signal = self.noise.add_awgn_to_scalar(
-                    total_signal,
-                    reference_signal_power=ref_power
-                )
 
             user.signal_strength = max(0.0, total_signal)
             user.snr_db = self.noise.snr_db
@@ -885,16 +937,14 @@ class Simulator5G(BeamformingEngine):
                 # Sum signal from all towers
                 total_signal = 0.0
                 for tower in self.towers:
-                    dx = x - tower.x
-                    dy = y - tower.y
-                    distance = math.sqrt(dx * dx + dy * dy)
-                    
-                    if distance > 0:
-                        angle = math.atan2(dx, dy) * 180 / math.pi
-                        gain = self._get_beam_gain_at_angle(angle, tower.steering_angle_deg)
-                        path_loss_db = self._compute_path_loss(distance)
-                        signal = (gain * self.signal.amplitude) / (10 ** (path_loss_db / 20))
-                        total_signal += signal
+                    _, _, _, signal = self._tower_signal_at_point(
+                        tower,
+                        x,
+                        y,
+                        tower.id + xi * 1000,
+                        tower.id + yi * 1000,
+                    )
+                    total_signal += signal
                 
                 row.append(total_signal)
             

@@ -45,6 +45,11 @@ export default function PolarPlot({
       ? series
       : [{ id: "single", angles, magnitudes, magnitudesDb, color: "#b466ff", label: "Beam" }];
 
+    const globalMaxMag = Math.max(
+      0,
+      ...source.flatMap((s) => s.magnitudes ?? [])
+    );
+
     return source.map((s, idx) => {
       const sAngles = s.angles ?? [];
       const sMagnitudes = s.magnitudes ?? [];
@@ -54,8 +59,8 @@ export default function PolarPlot({
       if (useDb && sMagnitudesDb && sMagnitudesDb.length > 0) {
         normalized = sMagnitudesDb.map((db) => Math.max(0, Math.min(1, (db - DB_MIN) / (DB_MAX - DB_MIN))));
       } else {
-        const maxMag = Math.max(0, ...sMagnitudes);
-        normalized = sMagnitudes.map((m) => (maxMag > 0 ? m / maxMag : 0));
+        const scale = globalMaxMag > 0 ? globalMaxMag : Math.max(0, ...sMagnitudes);
+        normalized = sMagnitudes.map((m) => (scale > 0 ? m / scale : 0));
       }
 
       const points = sAngles.map((angle, i) => {

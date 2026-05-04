@@ -33,6 +33,7 @@ export function use5GSimulatorAPI() {
         num_elements: params.numElements ?? 16,
         spacing: params.spacing ?? 0.5,
         frequency: params.frequency ?? 28e9,
+        amplitude: params.amplitude ?? 1.0,
         snr_db: params.snrDb ?? 30,
         auto_steer: params.autoSteer !== false,
         enable_noise: params.enableNoise !== false,

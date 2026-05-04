@@ -123,6 +123,7 @@ class SimulationService:
             num_elements = params_dict.get("num_elements", 16)
             spacing = params_dict.get("spacing", 0.5)
             frequency = params_dict.get("frequency", 28e9)
+            amplitude = params_dict.get("amplitude", 1.0)
             snr_db = params_dict.get("snr_db", 30)
             auto_steer = params_dict.get("auto_steer", True)
             grid_size = params_dict.get("grid_size", 80)
@@ -139,6 +140,7 @@ class SimulationService:
                 num_elements=num_elements,
                 spacing=spacing,
                 frequency=frequency,
+                amplitude=amplitude,
                 snr_db=snr_db
             )
             

@@ -1613,6 +1613,13 @@ export default function Simulator5G() {
     const localUsersById = new Map<number, { id: number; x: number; y: number }>(localUsers.map((u) => [u.id, u]));
     const allocsByTower = elementAllocsByTowerId;
     const kEpsilon = 1e-6;
+    const snrValue = Math.max(0, Number(deferredSnrDb ?? 30));
+    const snrScale = Math.max(0.05, snrValue / (snrValue + 30));
+    const averageAmplitude = Math.max(
+      1e-6,
+      localTowers.reduce((sum, tower) => sum + Number((tower as any).amplitude ?? 1.0), 0) / Math.max(1, localTowers.length)
+    );
+    const amplitudeScale = averageAmplitude;
 
     const spanX = Math.max(1e-6, mapViewport.maxX - mapViewport.minX);
     const spanY = Math.max(1e-6, mapViewport.maxY - mapViewport.minY);
@@ -1732,7 +1739,7 @@ export default function Simulator5G() {
         const steerForward = steerX * beamDirX + steerY * beamDirY;
         const phase = -kWave * (localX * steerLateral + localY * steerForward);
         const facingAngle = isCurved ? (beamAxisAngle + alpha_n) : beamAxisAngle;
-        const elemAmp = amplitude * ((weights[i] ?? 1) / wNorm);
+        const elemAmp = amplitude * snrScale * amplitudeScale * ((weights[i] ?? 1) / wNorm);
         elementEmitters.push({ x: ex, y: ey, amp: elemAmp, phase, k: kWave, facingAngle, isCurved: ((tower as any).geometry ?? "linear") === "curved" });
       }
     }
@@ -1826,6 +1833,12 @@ export default function Simulator5G() {
   const distanceChart = useMemo(() => {
     const SAMPLE_COUNT = 50;
     const minDist = 0.1;
+    const snrValue = Math.max(0, Number(deferredSnrDb ?? 30));
+    const snrScale = Math.max(0.05, snrValue / (snrValue + 30));
+    const averageAmplitude = Math.max(
+      1e-6,
+      localTowers.reduce((sum, tower) => sum + Number((tower as any).amplitude ?? 1.0), 0) / Math.max(1, localTowers.length)
+    );
 
     // Find max coverage radius among ALL local towers
     const maxRadius = Math.max(
@@ -1855,7 +1868,7 @@ export default function Simulator5G() {
         const alloc = allocs.find(a => Number(a.user_id) === u.id);
         const allocFraction = alloc?.fraction ?? (1.0 / (allocs.length || 1));
 
-        const signal = allocFraction / (d * d);
+        const signal = (allocFraction / (d * d)) * snrScale * averageAmplitude;
         row[`user_${u.id}`] = parseFloat(signal.toFixed(6));
       }
       return row;
@@ -1896,13 +1909,13 @@ export default function Simulator5G() {
           userId: u.id,
           towerId,
           distance: parseFloat(d.toFixed(2)),
-          signal: parseFloat((allocFraction / (d * d)).toFixed(6)),
+          signal: parseFloat(((allocFraction / (d * d)) * snrScale * averageAmplitude).toFixed(6)),
           beamHue,
         };
       });
 
     return { curveData, markers };
-  }, [localUsers, localTowers, liveConnectedTowerByUserId, elementAllocsByTowerId, towerCoverageRadiusByTowerId, mapViewport, CANVAS_W, CANVAS_H]);
+  }, [localUsers, localTowers, liveConnectedTowerByUserId, elementAllocsByTowerId, towerCoverageRadiusByTowerId, mapViewport, CANVAS_W, CANVAS_H, deferredSnrDb]);
 
   const panelTower = useMemo(
     () => localTowers.find((t) => t.id === panelTowerId) ?? null,
@@ -1934,26 +1947,8 @@ export default function Simulator5G() {
           }}
         />
       </div>
-
-      <div className="space-y-1.5">
-        <div className="flex justify-between items-center">
-          <Label className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
-            Heatmap Resolution
-          </Label>
-          <span className="text-xs font-mono text-foreground tabular-nums">
-            {Math.round(Number(params.gridSize ?? 80))}
-          </span>
-        </div>
-        <Slider
-          value={[Math.round(Number(params.gridSize ?? 80))]}
-          min={40}
-          max={180}
-          step={10}
-          onValueChange={([v]) => updateParam("gridSize", Math.round(v))}
-        />
-      </div>
     </div>
-  ), [panelTower, panelTowerId, params.gridSize, updateParam]);
+  ), [panelTower, panelTowerId, updateParam]);
 
   const panelControl = useMemo(() => (
     <div className="h-full flex flex-col">
