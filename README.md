@@ -25,10 +25,18 @@
 
 | Panel | Description |
 |---|---|
-| 🔴 **Interference Heatmap** | 2D heat map of the array's near-field radiation pattern |
-| 📡 **Polar Beam Pattern** | Main lobe + side lobes in a radar-style polar plot |
-| 📊 **Before vs After** | Side-lobe level comparison with/without apodization |
-| 📈 **Signal Profile** | Amplitude line cut at a configurable depth |
+| 🔴 **Interference Heatmap** | 2D field intensity map at the selected depth, showing constructive and destructive interference between array elements |
+| 📡 **Polar Beam Pattern** | Azimuth beam pattern around the array boresight; shows main lobe direction, side lobes, and nulls |
+| 📊 **Before vs After** | Direct comparison between the rectangular/unsteered reference pattern and the steered/apodized pattern |
+| 📈 **Signal Profile** | Line cut of the field at the configured depth, useful for measuring beam width, ripple, and side-lobe structure |
+
+- **Effects of the main controls**:
+  - `Elements (N)`: more elements narrow the main lobe and increase directivity.
+  - `Spacing (d/λ)`: larger spacing can create grating lobes; smaller spacing keeps the pattern cleaner.
+  - `Steering angle`: rotates the main lobe and changes where the beam energy points.
+  - `Window type`: trades sidelobe level for beamwidth; Blackman gives the lowest sidelobes, while rectangular gives the narrowest main lobe.
+  - `SNR`: adds noise to the simulated signal, which makes the heatmap and profile appear less clean.
+  - `Apodization`: applies amplitude tapering to reduce sidelobes and smooth the beam.
 
 ---
 
@@ -41,6 +49,8 @@
 - Click a **tower** or **user** on the map to select it
 - Use **W/A/S/D** or **arrow keys** to move the selected user in real time
 - Watch **signal strength bars** and the **2D interference heatmap** respond live
+- Adjust **coverage radius** and **heatmap resolution** to see how tower reach and detail change the service area
+- See how multi-user allocation splits tower elements between users, and how signal strength depends on distance and tower selection
 
 ---
 
@@ -54,6 +64,9 @@
 - **Drag** to reposition; **scroll** to resize radar cross-section (RCS)
 - Switch between **CW** and **CCW** scan directions
 - Use **Quick / Precision / Multi** presets; Export/Import scenarios as **JSON**
+- **Rotating Sweep** shows the current scan angle and which targets are illuminated in the beam path
+- **PPI display** plots target echoes by range and azimuth, so you can see how target position changes with scan angle
+- **Doppler waveform** shows velocity information from moving targets, with positive/negative shifts indicating direction
 
 ---
 
@@ -67,6 +80,10 @@
 - **Drag vessels/tissues** inside the phantom to reposition them
 - **Click** a tissue to open its property editor
 - Toggle **Auto Scan** to animate a full sweep and build the B-mode image
+- **Phantom View** shows the anatomy model, vessel geometry, and probe/beam orientation
+- **A-Mode** displays echo amplitude versus depth to reveal tissue boundaries and reflectors
+- **Doppler Mode** visualizes flow frequency shift; red/blue indicates motion toward or away from the probe
+- **B-Mode Sector Image** reconstructs the live ultrasound image from scan lines and shows how beam steering affects target contrast
 
 ---
 
